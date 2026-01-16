@@ -1,0 +1,46 @@
+# Bioguard Configuration File
+
+camera:
+  backend: picamera2  # or video_file
+  resolution: [640, 480]
+  fps: 20
+  video_path: null  # for video_file backend
+
+detection:
+  face_conf_threshold: 0.7
+
+tracking:
+  max_age: 30  # frames
+  min_hits: 3 # frames
+  iou_threshold: 0.3 # Intersection over Union threshold
+
+quality:
+  min_face_quality: 0.3 # normalized score
+  min_bbox_size: 40  # pixels
+  blur_threshold: 100.0  # Laplacian variance
+
+fusion:
+  window_size: 10  # M frames
+  consistency_count: 3  # N frames (reduced from 4 to 3 for even faster recognition)
+
+thresholds:
+  t_accept: 0.50  # Minimum score for FRIENDLY (kept at 0.5 since scores are 0.6+)
+  t_margin: 0.03  # Minimum margin (reduced from 0.07 - likely the main issue!)
+  t_timeout: 10.0  # seconds (increased from 8.0 to give even more time)
+
+index:
+  face_index_path: data/index/face.index
+  meta_path: data/index/meta.jsonl
+
+models:
+  face_detector: models/yunet.onnx
+  face_embedder: models/mobilefacenet.onnx
+
+stream:
+  enabled: true
+  host: 0.0.0.0
+  port: 8080
+
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

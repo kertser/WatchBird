@@ -1,0 +1,2 @@
+"""Embedding extraction modules."""
+

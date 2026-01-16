@@ -1,0 +1,47 @@
+[project]
+name = "watchbird"
+version = "0.1.0"
+description = "Real-time on-device multi-modal biometric identification system for drone camera streams"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26.0",
+    "opencv-python>=4.9.0",
+    "onnxruntime>=1.17.0",
+    "faiss-cpu>=1.8.0",
+    "pyyaml>=6.0",
+    "flask>=3.0.0",
+]
+
+[project.optional-dependencies]
+rpi = [
+    "picamera2>=0.3.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "mypy>=1.5.0",
+    "ruff>=0.1.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["watchbird"]
+package-dir = {"" = "src"}
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
