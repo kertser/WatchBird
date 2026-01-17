@@ -17,6 +17,8 @@ This guide will help you get WatchBird up and running quickly on your Raspberry 
 sudo apt-get update
 sudo apt-get install -y python3-pip python3-venv git
 sudo apt-get install -y libopencv-dev python3-opencv
+sudo apt-get install -y python3-picamera2
+
 ```
 
 ### 2. Clone Repository
@@ -36,8 +38,14 @@ source .venv/bin/activate
 ### 4. Install Python Packages
 
 ```bash
-pip install --upgrade pip
-pip install -e .
+# Remove existing venv
+rm -rf .venv
+
+# Create venv with system packages flag
+uv venv --system-site-packages
+
+# Sync dependencies
+uv sync
 ```
 
 ### 5. Test Installation
