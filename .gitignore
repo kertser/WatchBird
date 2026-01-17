@@ -44,8 +44,6 @@ htmlcov/
 # Project specific
 data/index/*.index
 data/index/*.jsonl
-models/*.onnx
-models/*.pt
 friendly/
 debug/
 *.mp4
