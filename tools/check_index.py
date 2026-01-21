@@ -34,7 +34,7 @@ def check_index_quality(config_path: str = "config.yaml"):
         return
 
     # Load index and metadata
-    faiss_index = FaissIndex(dimension=512)
+    faiss_index = FaissIndex()  # Will auto-detect dimension from loaded index
     if not faiss_index.load(face_index_path):
         print(f"\n❌ ERROR: Failed to load FAISS index")
         return
@@ -44,7 +44,7 @@ def check_index_quality(config_path: str = "config.yaml"):
 
     print(f"\n📊 INDEX STATISTICS:")
     print(f"   Total vectors: {faiss_index.index.ntotal}")
-    print(f"   Dimension: {faiss_index.dimension}")
+    print(f"   Dimension: {faiss_index.embedding_dim}")
 
     # Get unique persons
     persons = {}

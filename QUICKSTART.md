@@ -79,9 +79,53 @@ See `docs/models.md` for more model options.
 
 ## Enrollment
 
-### Option 1: Interactive Photo Capture (Recommended) ⭐
+### Option 1: Auto-Enrollment with Confidence Testing (Best!) 🌟
 
-Use the interactive capture tool to take photos:
+The system automatically captures photos until recognition confidence reaches a target level:
+
+```bash
+# Auto-capture until 85% confidence (recommended)
+python tools/auto_enroll.py --person mike --target-confidence 0.85 --auto-enroll
+
+# More strict (90% confidence, more photos needed)
+python tools/auto_enroll.py --person alice --target-confidence 0.90 --auto-enroll
+
+# Faster (70% confidence, fewer photos)
+python tools/auto_enroll.py --person bob --target-confidence 0.70 --auto-enroll
+```
+
+**How it works:**
+- System continuously captures good-quality face images
+- Every 3 photos, tests how well you can be recognized
+- Stops automatically when target confidence is reached
+- Typically captures 10-20 photos (adapts to person)
+- Real-time preview shows progress
+
+**During auto-enrollment:**
+- Position face in camera view
+- Slowly move head: left, right, up, down
+- Change expressions: neutral, smiling
+- System auto-captures when quality is good
+- Watch the confidence score increase
+- Press 'q' to stop early if needed
+
+**Parameters:**
+- `--target-confidence 0.85`: Stop when 85% confident (default, recommended)
+- `--min-photos 5`: Minimum photos before testing (default)
+- `--max-photos 30`: Maximum photos to capture (default)
+- `--test-interval 3`: Test every 3 photos (default)
+- `--auto-enroll`: Automatically run enrollment after capture
+
+**Benefits:**
+- ✅ **Quality-driven**: Captures until recognition is reliable
+- ✅ **Adaptive**: Different people need different amounts of photos
+- ✅ **Efficient**: Stops when enough data is collected
+- ✅ **Validation**: Tests against existing enrolled people
+- ✅ **Prevents confusion**: Warns if similar to another person
+
+### Option 2: Interactive Photo Capture (Manual Count)
+
+Use the interactive capture tool to take a fixed number of photos:
 
 ```bash
 # Step 1: Capture 10 photos of a person
@@ -125,7 +169,7 @@ python tools/capture_and_enroll.py --person alice --backend picamera2 --auto-enr
 python tools/capture_and_enroll.py --person alice --backend video_file --video test.mp4
 ```
 
-### Option 2: Manual Photo Preparation
+### Option 3: Manual Photo Preparation
 
 If you already have photos, prepare them manually:
 

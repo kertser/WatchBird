@@ -13,13 +13,13 @@ logger = logging.getLogger(__name__)
 class FaissIndex:
     """FAISS index wrapper for vector similarity search."""
 
-    def __init__(self, embedding_dim: int = 128):
+    def __init__(self, embedding_dim: Optional[int] = None):
         """Initialize FAISS index.
 
         Args:
-            embedding_dim: Dimension of embedding vectors
+            embedding_dim: Dimension of embedding vectors (auto-detected if None)
         """
-        self.embedding_dim = embedding_dim
+        self.embedding_dim = embedding_dim  # Can be None initially
         self.index: Optional[faiss.Index] = None
         self.num_vectors = 0
 
@@ -37,7 +37,11 @@ class FaissIndex:
                 logger.error(f"Expected 2D array, got shape {embeddings.shape}")
                 return False
 
-            if embeddings.shape[1] != self.embedding_dim:
+            # Auto-detect embedding dimension if not set
+            if self.embedding_dim is None:
+                self.embedding_dim = embeddings.shape[1]
+                logger.info(f"Auto-detected embedding dimension: {self.embedding_dim}")
+            elif embeddings.shape[1] != self.embedding_dim:
                 logger.error(
                     f"Embedding dim mismatch: expected {self.embedding_dim}, "
                     f"got {embeddings.shape[1]}"
