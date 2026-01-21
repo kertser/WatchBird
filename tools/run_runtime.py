@@ -272,9 +272,16 @@ class RecognitionPipeline:
 
         # Cleanup lost tracks to prevent memory leaks
         active_track_ids = {track.track_id for track in tracks}
-        lost_track_ids = set(self.track_frame_counters.keys()) - active_track_ids
+        # Also consider tracks stale if they haven't been updated recently
+        stale_track_ids = {
+            track.track_id for track in tracks
+            if track.time_since_update > 5  # Not updated in last 5 frames
+        }
+        lost_track_ids = (set(self.track_frame_counters.keys()) - active_track_ids) | stale_track_ids
+
         for track_id in lost_track_ids:
-            del self.track_frame_counters[track_id]
+            if track_id in self.track_frame_counters:
+                del self.track_frame_counters[track_id]
             if track_id in self.track_states:
                 del self.track_states[track_id]
 
@@ -283,6 +290,11 @@ class RecognitionPipeline:
 
         for track in tracks:
             track_id = track.track_id
+
+            # Skip drawing stale tracks (not updated in recent frames)
+            # This prevents empty bounding boxes from lingering when face is lost
+            if track.time_since_update > 0:
+                continue
 
             # Get state machine info if exists
             if track_id in self.track_states:
