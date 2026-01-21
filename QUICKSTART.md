@@ -270,7 +270,15 @@ quality:
 fusion:
   window_size: 10        # Rolling window size (frames)
   consistency_count: 3   # Required consistency (frames) - lower for faster recognition
+  embedding_sample_interval: 3  # Extract embeddings every N frames (3 = ~6.7 fps at 20fps)
 ```
+
+**Performance Tip:** `embedding_sample_interval` controls compute load:
+- `1` = Extract embeddings every frame (highest accuracy, most compute)
+- `3` = Every 3rd frame (~6.7 fps on 20fps camera, 66% less compute) **← Recommended**
+- `5` = Every 5th frame (~4 fps on 20fps camera, 80% less compute)
+
+Higher values save compute but may delay recognition slightly.
 
 ## Troubleshooting
 
@@ -286,12 +294,21 @@ fusion:
 - Check that `data/index/face.index` exists
 
 ### Low FPS on Raspberry Pi
+- **Reduce embedding extraction frequency** (best option):
+  ```yaml
+  fusion:
+    embedding_sample_interval: 5  # Only extract embeddings every 5th frame
+  ```
 - Reduce camera resolution in `config.yaml`:
   ```yaml
   camera:
     resolution: [320, 240]  # Smaller = faster
   ```
-- Lower detection thresholds to skip more frames
+- Lower camera FPS:
+  ```yaml
+  camera:
+    fps: 10  # Half the frames = half the compute
+  ```
 
 ### Picamera2 not available
 - Install on Raspberry Pi:

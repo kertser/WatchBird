@@ -60,6 +60,9 @@ class RecognitionPipeline:
         # Track state machines
         self.track_states: Dict[int, TrackStateMachine] = {}
 
+        # Frame counters per track for sampling embeddings
+        self.track_frame_counters: Dict[int, int] = {}
+
     def initialize(self, backend: str, video_path: Optional[str] = None, device_id: int = 0) -> bool:
         """Initialize all components.
 
@@ -179,6 +182,9 @@ class RecognitionPipeline:
         # Update tracker with face detections (treating faces as persons for MVP)
         tracks = self.tracker.update(face_bboxes, face_confs)
 
+        # Get embedding sample interval from config
+        embedding_sample_interval = self.config.fusion.get("embedding_sample_interval", 1)
+
         # Process each confirmed track
         for track in tracks:
             track_id = track.track_id
@@ -193,11 +199,21 @@ class RecognitionPipeline:
                     consistency_count=self.config.fusion["consistency_count"],
                     window_size=self.config.fusion["window_size"]
                 )
+                # Initialize frame counter for this track
+                self.track_frame_counters[track_id] = 0
 
             state_machine = self.track_states[track_id]
 
             # Skip if already in terminal state
             if state_machine.is_terminal():
+                continue
+
+            # Increment frame counter for this track
+            self.track_frame_counters[track_id] += 1
+
+            # Apply frame sampling - only extract embeddings every N frames
+            if self.track_frame_counters[track_id] % embedding_sample_interval != 0:
+                # Skip embedding extraction on this frame, but still track the face
                 continue
 
             # Extract face ROI
@@ -215,7 +231,7 @@ class RecognitionPipeline:
             if quality < self.config.quality["min_face_quality"]:
                 continue
 
-            # Extract embedding
+            # Extract embedding (EXPENSIVE OPERATION - now sampled)
             embedding = self.face_embedder.extract(face_roi)
 
             if embedding is None:
@@ -253,6 +269,14 @@ class RecognitionPipeline:
             if state_changed:
                 event = state_machine.get_event()
                 self.event_emitter.emit(event)
+
+        # Cleanup lost tracks to prevent memory leaks
+        active_track_ids = {track.track_id for track in tracks}
+        lost_track_ids = set(self.track_frame_counters.keys()) - active_track_ids
+        for track_id in lost_track_ids:
+            del self.track_frame_counters[track_id]
+            if track_id in self.track_states:
+                del self.track_states[track_id]
 
         # Draw annotations
         annotated_frame = frame.copy()
