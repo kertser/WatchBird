@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -11,6 +11,15 @@ import onnxruntime as ort
 from watchbird.utils.image_ops import normalize_image
 
 logger = logging.getLogger(__name__)
+
+# Reference facial points for 112x112 alignment (standard for face recognition)
+REFERENCE_POINTS_112 = np.array([
+    [38.2946, 51.6963],   # left eye
+    [73.5318, 51.5014],   # right eye
+    [56.0252, 71.7366],   # nose
+    [41.5493, 92.3655],   # left mouth
+    [70.7299, 92.2041]    # right mouth
+], dtype=np.float32)
 
 
 class FaceEmbedder:
@@ -28,6 +37,9 @@ class FaceEmbedder:
         self.session = None
         self.input_name = None
         self.input_shape = None
+
+        # Landmark detector for face alignment (lazy loaded)
+        self._landmark_detector = None
 
     def load(self) -> bool:
         """Load face embedding model.
@@ -64,6 +76,102 @@ class FaceEmbedder:
             logger.error(f"Failed to load face embedder: {e}")
             return False
 
+    def _get_landmark_detector(self):
+        """Lazy-load landmark detector for face alignment."""
+        if self._landmark_detector is None:
+            try:
+                # Use OpenCV's built-in face mesh or cascade-based landmark detector
+                # For simplicity, use the same YuNet detector on the cropped face
+                yunet_path = self.model_path.parent / "yunet.onnx"
+                if yunet_path.exists():
+                    self._landmark_detector = cv2.FaceDetectorYN.create(
+                        str(yunet_path), "", (112, 112), 0.5
+                    )
+                    logger.debug("Loaded YuNet for face alignment")
+            except Exception as e:
+                logger.debug(f"Could not load landmark detector: {e}")
+        return self._landmark_detector
+
+    def _detect_landmarks_on_roi(self, face_roi: np.ndarray) -> Optional[np.ndarray]:
+        """Detect 5-point landmarks on a cropped face ROI.
+
+        Args:
+            face_roi: Cropped face image
+
+        Returns:
+            5x2 array of landmarks or None if detection fails
+        """
+        detector = self._get_landmark_detector()
+        if detector is None:
+            return None
+
+        try:
+            h, w = face_roi.shape[:2]
+            detector.setInputSize((w, h))
+            _, faces = detector.detect(face_roi)
+
+            if faces is None or len(faces) == 0:
+                return None
+
+            # Extract landmarks from first face
+            # YuNet format: [x, y, w, h, x_re, y_re, x_le, y_le, x_n, y_n, x_rm, y_rm, x_lm, y_lm, conf]
+            face = faces[0]
+            landmarks = np.array([
+                [face[6], face[7]],   # left eye
+                [face[4], face[5]],   # right eye
+                [face[8], face[9]],   # nose
+                [face[12], face[13]], # left mouth
+                [face[10], face[11]]  # right mouth
+            ], dtype=np.float32)
+
+            return landmarks
+
+        except Exception as e:
+            logger.debug(f"Landmark detection failed: {e}")
+            return None
+
+    def _align_face(self, face_roi: np.ndarray, target_size: Tuple[int, int] = (112, 112)) -> np.ndarray:
+        """Align face using detected landmarks.
+
+        Args:
+            face_roi: Cropped face image
+            target_size: Output size (width, height)
+
+        Returns:
+            Aligned face image (or resized original if alignment fails)
+        """
+        # Try to detect landmarks
+        landmarks = self._detect_landmarks_on_roi(face_roi)
+
+        if landmarks is None:
+            # Fallback: just resize without alignment
+            return cv2.resize(face_roi, target_size)
+
+        try:
+            # Scale reference points to target size
+            scale = target_size[0] / 112.0
+            ref_points = REFERENCE_POINTS_112 * scale
+
+            # Estimate similarity transform (rotation + scale + translation)
+            tform, _ = cv2.estimateAffinePartial2D(landmarks, ref_points)
+
+            if tform is None:
+                return cv2.resize(face_roi, target_size)
+
+            # Warp face to canonical pose
+            aligned = cv2.warpAffine(
+                face_roi, tform, target_size,
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_REPLICATE
+            )
+
+            logger.debug("Face aligned using landmarks")
+            return aligned
+
+        except Exception as e:
+            logger.debug(f"Face alignment failed: {e}")
+            return cv2.resize(face_roi, target_size)
+
     def _preprocess(self, face_image: np.ndarray) -> np.ndarray:
         """Preprocess face image for model input.
 
@@ -81,12 +189,12 @@ class FaceEmbedder:
         else:
             target_h = target_w = 112  # Default for face models
 
-        # Resize face
-        resized = cv2.resize(face_image, (target_w, target_h))
+        # Align and resize face (handles rotation correction)
+        aligned = self._align_face(face_image, (target_w, target_h))
 
         # Normalize (model-specific, using common values)
         # Convert BGR to RGB and normalize to [-1, 1]
-        normalized = normalize_image(resized, mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
+        normalized = normalize_image(aligned, mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
 
         # Add batch dimension
         tensor = np.expand_dims(normalized, axis=0)
@@ -107,7 +215,7 @@ class FaceEmbedder:
             return None
 
         try:
-            # Preprocess
+            # Preprocess (includes alignment)
             input_tensor = self._preprocess(face_image)
 
             # Run inference
