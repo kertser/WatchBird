@@ -159,7 +159,7 @@ class AutoEnrollmentSession:
             Tuple of (face_image, quality, bbox) or None if no good face
         """
         # Detect faces (without landmarks since alignment is disabled)
-        face_bboxes, face_confs = self.face_detector.detect(frame)
+        face_bboxes, face_confs, _ = self.face_detector.detect(frame)
 
         if len(face_bboxes) == 0:
             logger.debug("No faces detected in frame")
@@ -207,7 +207,7 @@ class AutoEnrollmentSession:
             if img is None:
                 continue
 
-            bboxes, confs = self.face_detector.detect(img)
+            bboxes, confs, _ = self.face_detector.detect(img)
             if len(bboxes) == 0:
                 continue
 

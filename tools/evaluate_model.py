@@ -80,7 +80,7 @@ def evaluate_model(data_dir: Path, config_path: str):
                 continue
 
             # Detect faces
-            bboxes, confs = face_detector.detect(image, try_rotations=True)
+            bboxes, confs, _ = face_detector.detect(image, try_rotations=True)
             if len(bboxes) == 0:
                 print(f"  ⚠ No face in {person_id}/{img_path.name}")
                 continue

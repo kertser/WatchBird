@@ -57,7 +57,7 @@ class FaceDetector:
             logger.error(f"Failed to load face detector: {e}")
             return False
 
-    def detect(self, image: np.ndarray, try_rotations: bool = True) -> Tuple[List[np.ndarray], List[float]]:
+    def detect(self, image: np.ndarray, try_rotations: bool = True) -> Tuple[List[np.ndarray], List[float], List[np.ndarray]]:
         """Detect faces in image.
 
         Args:
@@ -65,12 +65,13 @@ class FaceDetector:
             try_rotations: If True, try detecting faces in rotated images
 
         Returns:
-            Tuple of (bboxes, confidences)
+            Tuple of (bboxes, confidences, landmarks)
             - bboxes: List of [x1, y1, x2, y2] arrays
             - confidences: List of confidence scores
+            - landmarks: List of 5x2 landmark arrays (right_eye, left_eye, nose, right_mouth, left_mouth)
         """
         if self.detector is None:
-            return [], []
+            return [], [], []
 
         h, w = image.shape[:2]
 
@@ -78,31 +79,33 @@ class FaceDetector:
         self.detector.setInputSize((w, h))
 
         # Try detecting in original orientation
-        bboxes, confidences = self._detect_single(image)
+        bboxes, confidences, landmarks = self._detect_single(image)
 
         # If no faces found and rotation is enabled, try rotated images
         if len(bboxes) == 0 and try_rotations:
             for angle in [90, 180, 270]:
                 rotated = self._rotate_image(image, angle)
-                rot_bboxes, rot_confs = self._detect_single(rotated)
+                rot_bboxes, rot_confs, rot_landmarks = self._detect_single(rotated)
 
                 if len(rot_bboxes) > 0:
                     # Transform bboxes back to original orientation
                     bboxes = self._transform_bboxes_back(rot_bboxes, angle, w, h)
+                    # Transform landmarks back
+                    landmarks = self._transform_landmarks_back(rot_landmarks, angle, w, h)
                     confidences = rot_confs
                     logger.debug(f"Found {len(bboxes)} face(s) at {angle}° rotation")
                     break
 
-        return bboxes, confidences
+        return bboxes, confidences, landmarks
 
-    def _detect_single(self, image: np.ndarray) -> Tuple[List[np.ndarray], List[float]]:
+    def _detect_single(self, image: np.ndarray) -> Tuple[List[np.ndarray], List[float], List[np.ndarray]]:
         """Detect faces in a single image without rotation.
 
         Args:
             image: Input image in BGR format
 
         Returns:
-            Tuple of (bboxes, confidences)
+            Tuple of (bboxes, confidences, landmarks)
         """
         h, w = image.shape[:2]
         self.detector.setInputSize((w, h))
@@ -112,27 +115,39 @@ class FaceDetector:
             _, faces = self.detector.detect(image)
 
             if faces is None or len(faces) == 0:
-                return [], []
+                return [], [], []
 
             bboxes = []
             confidences = []
+            landmarks_list = []
 
             for face in faces:
-                # YuNet returns: [x, y, w, h, ...landmarks..., conf]
-                x, y, w, h = face[:4]
+                # YuNet returns: [x, y, w, h, x_re, y_re, x_le, y_le, x_n, y_n, x_rm, y_rm, x_lm, y_lm, conf]
+                x, y, fw, fh = face[:4]
                 conf = face[-1]
 
                 if conf >= self.conf_threshold:
                     # Convert to [x1, y1, x2, y2]
-                    bbox = np.array([x, y, x + w, y + h])
+                    bbox = np.array([x, y, x + fw, y + fh])
                     bboxes.append(bbox)
                     confidences.append(float(conf))
 
-            return bboxes, confidences
+                    # Extract 5-point landmarks
+                    # YuNet order: right_eye, left_eye, nose, right_mouth, left_mouth
+                    landmarks = np.array([
+                        [face[4], face[5]],   # right eye
+                        [face[6], face[7]],   # left eye
+                        [face[8], face[9]],   # nose
+                        [face[10], face[11]], # right mouth
+                        [face[12], face[13]]  # left mouth
+                    ], dtype=np.float32)
+                    landmarks_list.append(landmarks)
+
+            return bboxes, confidences, landmarks_list
 
         except Exception as e:
             logger.error(f"Error during face detection: {e}")
-            return [], []
+            return [], [], []
 
     def _rotate_image(self, image: np.ndarray, angle: int) -> np.ndarray:
         """Rotate image by specified angle.
@@ -205,3 +220,65 @@ class FaceDetector:
             transformed.append(new_bbox)
 
         return transformed
+
+    def _transform_landmarks_back(
+        self, landmarks_list: List[np.ndarray], angle: int, orig_w: int, orig_h: int
+    ) -> List[np.ndarray]:
+        """Transform landmarks back to original image orientation.
+
+        Args:
+            landmarks_list: List of 5x2 landmark arrays in rotated image coordinates
+            angle: Rotation angle that was applied
+            orig_w: Original image width
+            orig_h: Original image height
+
+        Returns:
+            Landmarks in original image coordinates
+        """
+        transformed = []
+
+        for landmarks in landmarks_list:
+            new_landmarks = np.zeros_like(landmarks)
+
+            for i, (x, y) in enumerate(landmarks):
+                if angle == 90:
+                    new_x = y
+                    new_y = orig_h - x
+                elif angle == 180:
+                    new_x = orig_w - x
+                    new_y = orig_h - y
+                elif angle == 270:
+                    new_x = orig_w - y
+                    new_y = x
+                else:
+                    new_x, new_y = x, y
+
+                new_landmarks[i] = [new_x, new_y]
+
+            transformed.append(new_landmarks)
+
+        return transformed
+
+    @staticmethod
+    def compute_head_tilt(landmarks: np.ndarray) -> float:
+        """Compute head tilt angle from eye landmarks.
+
+        Args:
+            landmarks: 5x2 array of landmarks (right_eye, left_eye, nose, right_mouth, left_mouth)
+
+        Returns:
+            Head tilt angle in degrees (positive = clockwise tilt)
+        """
+        if landmarks is None or len(landmarks) < 2:
+            return 0.0
+
+        right_eye = landmarks[0]
+        left_eye = landmarks[1]
+
+        # Calculate angle between eyes
+        dx = left_eye[0] - right_eye[0]
+        dy = left_eye[1] - right_eye[1]
+
+        angle = np.degrees(np.arctan2(dy, dx))
+        return float(angle)
+

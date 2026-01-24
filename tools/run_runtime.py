@@ -177,10 +177,10 @@ class RecognitionPipeline:
             Annotated frame
         """
         # Detect faces (for MVP, we'll use faces as "persons")
-        face_bboxes, face_confs = self.face_detector.detect(frame)
+        face_bboxes, face_confs, face_landmarks = self.face_detector.detect(frame)
 
         # Update tracker with face detections (treating faces as persons for MVP)
-        tracks = self.tracker.update(face_bboxes, face_confs)
+        tracks = self.tracker.update(face_bboxes, face_confs, face_landmarks)
 
         # Get embedding sample interval from config
         embedding_sample_interval = self.config.fusion.get("embedding_sample_interval", 1)
@@ -256,6 +256,26 @@ class RecognitionPipeline:
             best_person_id, best_score, margin = self.fusion.aggregate_top_candidate(matches)
             second_score = best_score - margin
 
+            # Check for track re-identification (same person from lost track)
+            if best_person_id is not None and best_score > 0.5:
+                reid_info = self.tracker.check_reid(track_id, best_person_id, best_score)
+                if reid_info is not None:
+                    # This track is the same person as a previously lost track
+                    # Transfer state machine from new track to maintain continuity
+                    original_track_id = reid_info['original_track_id']
+
+                    # If we still have state for the original track, use it
+                    if original_track_id in self.track_states:
+                        # Keep the original state machine, just update with current track
+                        old_state = self.track_states[original_track_id]
+                        self.track_states[track_id] = old_state
+                        old_state.track_id = track_id  # Update track ID reference
+                        del self.track_states[original_track_id]
+                        logger.info(
+                            f"Re-linked track {track_id} to previous track {original_track_id} "
+                            f"({best_person_id}, gap={reid_info['time_gap']:.1f}s)"
+                        )
+
             # Update state machine
             state_changed = state_machine.update(
                 best_person_id=best_person_id,
@@ -306,7 +326,9 @@ class RecognitionPipeline:
                     bbox=track.bbox,
                     state=state_machine.state.value,
                     person_id=state_machine.person_id,
-                    confidence=state_machine.confidence
+                    confidence=state_machine.confidence,
+                    head_tilt=track.head_tilt,
+                    landmarks=track.landmarks
                 )
             else:
                 # Draw basic detection box for untracked faces
@@ -316,7 +338,9 @@ class RecognitionPipeline:
                     bbox=track.bbox,
                     state="DETECTING",
                     person_id=None,
-                    confidence=track.confidence
+                    confidence=track.confidence,
+                    head_tilt=track.head_tilt,
+                    landmarks=track.landmarks
                 )
 
         return annotated_frame

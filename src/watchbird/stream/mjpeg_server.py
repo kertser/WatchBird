@@ -112,7 +112,9 @@ def draw_detection_boxes(
     bbox: np.ndarray,
     state: str,
     person_id: Optional[str] = None,
-    confidence: float = 0.0
+    confidence: float = 0.0,
+    head_tilt: float = 0.0,
+    landmarks: Optional[np.ndarray] = None
 ) -> np.ndarray:
     """Draw detection box on frame.
 
@@ -123,6 +125,8 @@ def draw_detection_boxes(
         state: Track state (DETECTING, SUSPECT, FRIENDLY, ENEMY)
         person_id: Person identifier (for FRIENDLY)
         confidence: Confidence score
+        head_tilt: Head tilt angle in degrees (for rotated box)
+        landmarks: Optional 5x2 array of facial landmarks
 
     Returns:
         Annotated frame
@@ -141,9 +145,44 @@ def draw_detection_boxes(
         color = (0, 255, 255)  # Yellow
         label = f"SUSPECT: Track {track_id}"
 
-    # Draw box
     x1, y1, x2, y2 = map(int, bbox)
-    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+    # Draw rotated box if head tilt is significant (>5 degrees)
+    if abs(head_tilt) > 5.0:
+        # Calculate center and size
+        cx = (x1 + x2) / 2
+        cy = (y1 + y2) / 2
+        width = x2 - x1
+        height = y2 - y1
+
+        # Get rotated rectangle corners
+        rect = ((cx, cy), (width, height), head_tilt)
+        box_points = cv2.boxPoints(rect)
+        box_points = np.int32(box_points)
+
+        # Draw rotated box
+        cv2.drawContours(frame, [box_points], 0, color, 2)
+
+        # Draw tilt indicator line along eye axis
+        if landmarks is not None and len(landmarks) >= 2:
+            right_eye = tuple(map(int, landmarks[0]))
+            left_eye = tuple(map(int, landmarks[1]))
+            cv2.line(frame, right_eye, left_eye, (255, 255, 0), 1)  # Cyan line between eyes
+    else:
+        # Draw regular axis-aligned box
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+    # Draw facial landmarks if available
+    if landmarks is not None:
+        for i, (lx, ly) in enumerate(landmarks):
+            # Different colors for different landmarks
+            if i < 2:  # Eyes
+                lm_color = (255, 255, 0)  # Cyan
+            elif i == 2:  # Nose
+                lm_color = (0, 255, 255)  # Yellow
+            else:  # Mouth
+                lm_color = (255, 0, 255)  # Magenta
+            cv2.circle(frame, (int(lx), int(ly)), 2, lm_color, -1)
 
     # Draw label background
     label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)

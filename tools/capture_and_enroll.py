@@ -87,7 +87,7 @@ class PhotoCaptureSession:
                 frame_count += 1
 
                 # Detect faces
-                bboxes, confs = self.face_detector.detect(frame, try_rotations=False)
+                bboxes, confs, _ = self.face_detector.detect(frame, try_rotations=False)
 
                 # Draw UI
                 display_frame = frame.copy()

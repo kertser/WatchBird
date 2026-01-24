@@ -1,212 +1,114 @@
-# WatchBird - Drone Biometric Identification System
+# WatchBird
 
-Real-time, fully on-device multi-modal biometric identification system for drone camera streams running on Raspberry Pi 4 or Jetson-class embedded hardware.
-
-## Overview
-
-WatchBird implements a production-oriented face recognition system that classifies detected persons as:
-- **Friendly**: Identified as enrolled identity with high confidence
-- **Enemy**: Not identified after configured timeout (unknown persons)
-
-The system is designed for **headless operation** with no cloud dependencies, running entirely on-device.
+Real-time face recognition system for embedded devices (Raspberry Pi 4 / Jetson Nano).
 
 ## Features
 
-- ✅ **Multi-modal architecture** (MVP: face-only, expandable to ReID + Gait)
-- ✅ **Real-time tracking** with stable track IDs
-- ✅ **Quality gating** for blur, size, and detection confidence
-- ✅ **Temporal aggregation** for robust multi-frame decisions
-- ✅ **Headless-friendly** with MJPEG streaming for remote debugging
-- ✅ **Configurable** via YAML
-- ✅ **Type-safe** Python with comprehensive type hints
-
-## Architecture
-
-```
-Camera → Detection → Tracking → Embedding → FAISS Search → 
-Fusion → Temporal Aggregation → State Machine → Events
-```
-
-## Installation
-
-### Prerequisites
-
-- Python 3.11+
-- Raspberry Pi OS (Debian) or compatible Linux
-- Raspberry Pi 4 or Jetson Nano
-
-### Install Dependencies
-
-```bash
-# Install system dependencies (RPi)
-sudo apt-get update
-sudo apt-get install -y python3-opencv python3-numpy
-
-# Clone repository
-git clone <repo-url>
-cd WatchBird
-
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install package
-pip install -e .
-```
-
-### Download Models
-
-The system requires the following ONNX models:
-
-1. **Face Detector**: YuNet (built-in with OpenCV, or download ONNX)
-2. **Person Detector**: YOLOv8n or similar lightweight model
-3. **Face Embedder**: MobileFaceNet or ArcFace
-
-Place models in the `models/` directory. See [Model Setup](docs/models.md) for download links.
+- **On-device processing** - No cloud dependencies
+- **Real-time tracking** - Stable track IDs with re-identification
+- **Quality gating** - Filters blur, size, and low confidence
+- **Rotated face support** - Handles tilted heads via landmark alignment
+- **MJPEG streaming** - Remote debugging via browser
 
 ## Quick Start
 
-### 1. Prepare Enrollment Data
-
-Organize friendly identity images:
-
-```
-friendly/
-├── alice/
-│   ├── img_001.jpg
-│   ├── img_002.jpg
-│   └── ...
-├── bob/
-│   ├── img_001.jpg
-│   └── ...
-└── ...
-```
-
-### 2. Run Enrollment
+### 1. Install
 
 ```bash
-python tools/enroll.py --data-dir friendly --config config.yaml
+git clone <repo-url> && cd WatchBird
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+python tools/download_models.py
 ```
 
-This creates:
-- `data/index/face.index` (FAISS index)
-- `data/index/meta.jsonl` (metadata)
+### 2. Enroll People
 
-### 3. Run Runtime Recognition
-
-**With Picamera2 (on Raspberry Pi):**
 ```bash
+# Auto-enrollment (recommended) - captures until 85% confidence
+python tools/auto_enroll.py --person mike --auto-enroll
+
+# Or manual capture
+python tools/capture_and_enroll.py --person mike --count 15 --auto-enroll
+```
+
+### 3. Run
+
+```bash
+# USB camera
+python tools/run_runtime.py --backend usb --config config.yaml
+
+# Raspberry Pi camera
 python tools/run_runtime.py --backend picamera2 --config config.yaml
 ```
 
-**With video file (for testing):**
-```bash
-python tools/run_runtime.py --backend video_file --video test_video.mp4 --config config.yaml
-```
+### 4. View Stream
 
-### 4. View Debug Stream
+Open `http://<device-ip>:8080/stream` in browser.
 
-Open browser and navigate to:
-```
-http://<raspberry-pi-ip>:8080/stream
-```
+## Classification States
 
-## Configuration
-
-Edit `config.yaml` to customize:
-
-- Camera settings (resolution, FPS)
-- Detection thresholds
-- Tracking parameters
-- Quality gating thresholds
-- Fusion and decision thresholds
-- Model paths
+| State | Color | Meaning |
+|-------|-------|---------|
+| SUSPECT | Yellow | Analyzing (< 5 seconds) |
+| FRIENDLY | Green | Identified as enrolled person |
+| ENEMY | Red | Unknown after timeout |
 
 ## Project Structure
 
 ```
-.
-├── config.yaml              # Configuration file
-├── src/WatchBird/            # Main package
-│   ├── camera/              # Camera backends (Picamera2, video file)
-│   ├── detect/              # Person & face detectors
-│   ├── track/               # Object tracker
-│   ├── embed/               # Face/ReID embedders
-│   ├── index/               # FAISS index wrapper
-│   ├── fusion/              # Multi-modal fusion
-│   ├── runtime/             # State machine & pipeline
-│   ├── stream/              # MJPEG server
-│   └── utils/               # Utilities
-├── tools/                   # CLI tools
-│   ├── enroll.py            # Enrollment tool
-│   ├── run_runtime.py       # Runtime recognition
-│   └── calibrate_thresholds.py  # Threshold calibration
-├── data/index/              # FAISS indexes
-├── models/                  # ONNX models
-└── friendly/                # Enrollment images
-
+WatchBird/
+├── config.yaml          # Configuration
+├── models/              # ONNX models (yunet, mobilefacenet)
+├── friendly/            # Enrollment photos by person
+├── data/index/          # FAISS index + metadata
+├── src/watchbird/       # Main package
+└── tools/               # CLI tools
 ```
 
-## Development
+## Configuration
 
-### Run Tests
+Key settings in `config.yaml`:
 
-```bash
-pytest tests/
+```yaml
+thresholds:
+  t_accept: 0.65      # Min similarity for FRIENDLY
+  t_margin: 0.10      # Min margin between best/second match
+  t_timeout: 5.0      # Seconds before ENEMY classification
+
+fusion:
+  embedding_sample_interval: 3  # Process every Nth frame (save compute)
 ```
 
-### Code Quality
+## Tools
 
-```bash
-# Format code
-black src/
+| Tool | Purpose |
+|------|---------|
+| `auto_enroll.py` | Smart enrollment with confidence testing |
+| `capture_and_enroll.py` | Manual photo capture + enrollment |
+| `enroll.py` | Build index from existing photos |
+| `run_runtime.py` | Main recognition pipeline |
+| `check_photos.py` | Verify enrollment photo quality |
 
-# Type checking
-mypy src/
+## Performance Tips
 
-# Linting
-ruff check src/
-```
+- Use `embedding_sample_interval: 3-5` for low-power devices
+- Lower resolution in `config.yaml` if needed
+- Use `mobilefacenet.onnx` (faster) vs `arcface_r100.onnx` (more accurate)
 
-## Performance
+## Troubleshooting
 
-**Raspberry Pi 4 Targets:**
-- FPS: 5-10 fps
-- Latency: < 2 seconds detection → classification
-- Memory: < 1GB RAM
+**Wrong person detected:**
+- Re-enroll with more varied photos (angles, lighting, expressions)
+- Use `python tools/check_photos.py --data-dir friendly` to verify quality
 
-## Roadmap
+**Low FPS:**
+- Increase `embedding_sample_interval`
+- Reduce camera resolution
 
-### MVP (Current)
-- [x] Core infrastructure
-- [x] Camera backends
-- [x] Detection & tracking
-- [ ] Face embedding
-- [ ] FAISS integration
-- [ ] State machine
-- [ ] MJPEG streaming
-- [ ] Enrollment tool
-- [ ] Runtime tool
-
-### Post-MVP
-- [ ] Body re-identification (ReID)
-- [ ] Gait/motion signatures
-- [ ] Multi-modal fusion
-- [ ] Threshold calibration tool
-- [ ] GPU acceleration (Jetson)
-- [ ] UDP event output
+**Face not detected when tilted:**
+- System auto-tries rotated detection
+- Ensure good lighting
 
 ## License
 
-[Specify License]
-
-## Contributing
-
-Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## Acknowledgments
-
-- YuNet face detector from OpenCV
-- SORT tracker algorithm
-- FAISS vector search library
-
+MIT

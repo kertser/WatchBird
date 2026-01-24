@@ -94,7 +94,7 @@ def process_enrollment(
             logger.debug(f"  Image shape: {image.shape}")
 
             # Detect faces
-            face_bboxes, face_confs = face_detector.detect(image)
+            face_bboxes, face_confs, _ = face_detector.detect(image)
 
             if len(face_bboxes) == 0:
                 logger.warning(f"  ✗ No face detected in {img_path.name}")

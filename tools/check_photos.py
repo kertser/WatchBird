@@ -59,7 +59,7 @@ def check_enrollment_photos(data_dir: Path, config_path: str = "config.yaml"):
                 continue
 
             # Detect faces
-            bboxes, confs = face_detector.detect(image, try_rotations=True)
+            bboxes, confs, _ = face_detector.detect(image, try_rotations=True)
 
             if len(bboxes) == 0:
                 print(f"  ✗ {img_path.name} - NO FACES DETECTED")
