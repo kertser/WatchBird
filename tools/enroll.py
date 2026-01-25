@@ -171,14 +171,19 @@ def main() -> None:
     parser.add_argument(
         "--min-quality",
         type=float,
-        default=0.4,
-        help="Minimum face quality threshold"
+        default=None,
+        help="Minimum face quality threshold (default: from config)"
     )
 
     args = parser.parse_args()
 
     # Load configuration
     config = Config(args.config)
+
+    # Get min quality from args or config
+    min_quality = args.min_quality
+    if min_quality is None:
+        min_quality = config.quality.get("min_enroll_quality", 0.5)
 
     # Initialize components
     logger.info("Loading models...")
@@ -213,12 +218,12 @@ def main() -> None:
         return
 
     # Process enrollment
-    logger.info("Processing enrollment...")
+    logger.info(f"Processing enrollment (min_quality={min_quality:.2f})...")
     embeddings, meta_store = process_enrollment(
         identities,
         face_detector,
         face_embedder,
-        min_quality=args.min_quality
+        min_quality=min_quality
     )
 
     # Build FAISS index

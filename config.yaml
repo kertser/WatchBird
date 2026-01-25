@@ -15,7 +15,8 @@ tracking:
   iou_threshold: 0.3 # Intersection over Union threshold
 
 quality:
-  min_face_quality: 0.3 # normalized score
+  min_face_quality: 0.3    # Runtime: filter low-quality faces
+  min_enroll_quality: 0.7  # Enrollment: stricter quality for enrolled photos
   min_bbox_size: 40  # pixels
   blur_threshold: 100.0  # Laplacian variance
 
@@ -25,7 +26,7 @@ fusion:
   embedding_sample_interval: 3  # Extract embeddings every N frames (3 = ~6.7 fps at 20fps camera)
 
 thresholds:
-  t_accept: 0.50  # Minimum score for FRIENDLY (kept at 0.5 since scores are 0.6+)
+  t_accept: 0.65  # Minimum score for FRIENDLY (kept at 0.5 since scores are 0.6+)
   t_margin: 0.03  # Minimum margin (reduced from 0.07 - likely the main issue!)
   t_timeout: 10.0  # seconds (increased from 8.0 to give even more time)
 
