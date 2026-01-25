@@ -24,6 +24,7 @@ fusion:
   window_size: 10  # M frames
   consistency_count: 3  # N frames (reduced from 4 to 3 for even faster recognition)
   embedding_sample_interval: 3  # Extract embeddings every N frames (3 = ~6.7 fps at 20fps camera)
+  confidence_decay_threshold: 3  # Number of inconsistent frames before dropping FRIENDLY status
 
 thresholds:
   t_accept: 0.65  # Minimum score for FRIENDLY (kept at 0.5 since scores are 0.6+)

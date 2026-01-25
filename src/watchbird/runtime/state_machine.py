@@ -27,7 +27,8 @@ class TrackStateMachine:
         t_margin: float = 0.10,
         t_timeout: float = 5.0,
         consistency_count: int = 6,
-        window_size: int = 10
+        window_size: int = 10,
+        confidence_decay_threshold: int = 3
     ):
         """Initialize track state machine.
 
@@ -38,17 +39,22 @@ class TrackStateMachine:
             t_timeout: Timeout in seconds before becoming ENEMY
             consistency_count: Minimum consistency frames required
             window_size: Temporal aggregation window size
+            confidence_decay_threshold: Number of inconsistent frames before dropping FRIENDLY
         """
         self.track_id = track_id
         self.t_accept = t_accept
         self.t_margin = t_margin
         self.t_timeout = t_timeout
         self.consistency_count = consistency_count
+        self.confidence_decay_threshold = confidence_decay_threshold
 
         self.state = TrackState.SUSPECT
         self.person_id: Optional[str] = None
         self.confidence: float = 0.0
         self.start_time = time.time()
+
+        # Tracks consecutive frames with inconsistent detection while FRIENDLY
+        self.inconsistent_frame_count: int = 0
 
         self.aggregator = TemporalAggregator(window_size=window_size)
         self.modalities_used: Dict[str, float] = {}
@@ -121,6 +127,7 @@ class TrackStateMachine:
                     self.state = TrackState.FRIENDLY
                     self.person_id = person_id
                     self.confidence = median_score
+                    self.inconsistent_frame_count = 0
 
                     logger.info(
                         f"Track {self.track_id} → FRIENDLY ({person_id}, "
@@ -160,6 +167,81 @@ class TrackStateMachine:
                 logger.info(f"Track {self.track_id} → ENEMY (timeout after {elapsed:.1f}s)")
                 return True
 
+        elif self.state == TrackState.FRIENDLY:
+            # Continue comparing faces and update confidence
+            person_id, metrics = self.aggregator.get_aggregated_decision(
+                consistency_count=self.consistency_count
+            )
+
+            if person_id is not None and metrics:
+                median_score = metrics.get("median_score", 0.0)
+                median_margin = metrics.get("median_margin", 0.0)
+                consistency = metrics.get("consistency", 0)
+
+                # Check if detection is still consistent with same person
+                if (
+                    person_id == self.person_id and
+                    median_score >= self.t_accept and
+                    median_margin >= self.t_margin and
+                    consistency >= self.consistency_count
+                ):
+                    # Continuous detection - update confidence (gain confidence)
+                    # Use exponential moving average to smoothly increase confidence
+                    self.confidence = max(self.confidence, median_score)
+                    self.inconsistent_frame_count = 0
+
+                    logger.debug(
+                        f"Track {self.track_id} FRIENDLY maintained ({self.person_id}, "
+                        f"conf={self.confidence:.3f}, margin={median_margin:.3f})"
+                    )
+                else:
+                    # Detection inconsistent - increment counter
+                    self.inconsistent_frame_count += 1
+
+                    logger.debug(
+                        f"Track {self.track_id} FRIENDLY inconsistent frame "
+                        f"({self.inconsistent_frame_count}/{self.confidence_decay_threshold}): "
+                        f"detected={person_id}, expected={self.person_id}"
+                    )
+
+                    # Check if we should degrade back to SUSPECT
+                    if self.inconsistent_frame_count >= self.confidence_decay_threshold:
+                        old_person = self.person_id
+                        old_confidence = self.confidence
+
+                        self.state = TrackState.SUSPECT
+                        self.person_id = None
+                        self.confidence = 0.0
+                        self.inconsistent_frame_count = 0
+                        self.start_time = time.time()  # Reset timeout
+                        self.aggregator.clear()  # Clear buffer to start fresh
+
+                        logger.info(
+                            f"Track {self.track_id} FRIENDLY → SUSPECT (lost consistency: "
+                            f"was {old_person} conf={old_confidence:.3f})"
+                        )
+                        return True
+            else:
+                # No valid detection - increment inconsistent counter
+                self.inconsistent_frame_count += 1
+
+                if self.inconsistent_frame_count >= self.confidence_decay_threshold:
+                    old_person = self.person_id
+                    old_confidence = self.confidence
+
+                    self.state = TrackState.SUSPECT
+                    self.person_id = None
+                    self.confidence = 0.0
+                    self.inconsistent_frame_count = 0
+                    self.start_time = time.time()
+                    self.aggregator.clear()
+
+                    logger.info(
+                        f"Track {self.track_id} FRIENDLY → SUSPECT (no detection: "
+                        f"was {old_person} conf={old_confidence:.3f})"
+                    )
+                    return True
+
         return False
 
     def get_event(self) -> Dict:
@@ -179,10 +261,12 @@ class TrackStateMachine:
         return event
 
     def is_terminal(self) -> bool:
-        """Check if state is terminal (FRIENDLY or ENEMY).
+        """Check if state is terminal (only ENEMY).
+
+        FRIENDLY is not terminal - we continue comparing faces.
 
         Returns:
             True if in terminal state
         """
-        return self.state in (TrackState.FRIENDLY, TrackState.ENEMY)
+        return self.state == TrackState.ENEMY
 
