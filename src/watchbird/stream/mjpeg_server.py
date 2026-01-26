@@ -184,26 +184,89 @@ def draw_detection_boxes(
                 lm_color = (255, 0, 255)  # Magenta
             cv2.circle(frame, (int(lx), int(ly)), 2, lm_color, -1)
 
-    # Draw label background
-    label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-    cv2.rectangle(
-        frame,
-        (x1, y1 - label_size[1] - 10),
-        (x1 + label_size[0], y1),
-        color,
-        -1
-    )
+    # Draw label - rotated if head tilt is significant
+    label_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
 
-    # Draw label text
-    cv2.putText(
-        frame,
-        label,
-        (x1, y1 - 5),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        (0, 0, 0),
-        1
-    )
+    if abs(head_tilt) > 5.0:
+        # Create rotated label for tilted boxes
+        cx = (x1 + x2) / 2
+        cy = y1 - label_size[1] - 5  # Position above the box
+
+        # Create a small image for the label with background
+        label_width = label_size[0] + 10
+        label_height = label_size[1] + 10
+        label_img = np.zeros((label_height, label_width, 3), dtype=np.uint8)
+        label_img[:] = color  # Fill with state color
+
+        # Put text on label image
+        cv2.putText(
+            label_img,
+            label,
+            (5, label_height - 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 0, 0),
+            1
+        )
+
+        # Rotate the label image (negate angle to match bounding box rotation direction)
+        rotation_matrix = cv2.getRotationMatrix2D(
+            (label_width / 2, label_height / 2),
+            -head_tilt,
+            1.0
+        )
+
+        # Calculate new bounding box size after rotation
+        cos_val = abs(rotation_matrix[0, 0])
+        sin_val = abs(rotation_matrix[0, 1])
+        new_width = int(label_height * sin_val + label_width * cos_val)
+        new_height = int(label_height * cos_val + label_width * sin_val)
+
+        # Adjust rotation matrix for the new size
+        rotation_matrix[0, 2] += (new_width - label_width) / 2
+        rotation_matrix[1, 2] += (new_height - label_height) / 2
+
+        rotated_label = cv2.warpAffine(
+            label_img,
+            rotation_matrix,
+            (new_width, new_height),
+            borderValue=(0, 0, 0)
+        )
+
+        # Calculate position to place rotated label (above the rotated box)
+        # Offset based on tilt angle (negated to match rotation direction)
+        offset_x = int(np.sin(np.radians(-head_tilt)) * (label_size[1] + 10))
+        place_x = int(cx - new_width / 2) - offset_x
+        place_y = int(cy - new_height / 2)
+
+        # Blend rotated label onto frame
+        for i in range(new_height):
+            for j in range(new_width):
+                py = place_y + i
+                px = place_x + j
+                if 0 <= py < frame.shape[0] and 0 <= px < frame.shape[1]:
+                    # Only draw non-black pixels
+                    if np.any(rotated_label[i, j] > 10):
+                        frame[py, px] = rotated_label[i, j]
+    else:
+        # Draw regular horizontal label
+        cv2.rectangle(
+            frame,
+            (x1, y1 - label_size[1] - 10),
+            (x1 + label_size[0], y1),
+            color,
+            -1
+        )
+
+        cv2.putText(
+            frame,
+            label,
+            (x1, y1 - 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 0, 0),
+            1
+        )
 
     return frame
 

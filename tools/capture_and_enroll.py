@@ -27,6 +27,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def check_gui_available() -> bool:
+    """Check if OpenCV GUI (highgui) is available.
+
+    Returns:
+        True if GUI is available, False otherwise
+    """
+    try:
+        # Try to create and destroy a test window
+        cv2.namedWindow("__test__", cv2.WINDOW_NORMAL)
+        cv2.destroyWindow("__test__")
+        return True
+    except cv2.error:
+        return False
+
+
 class PhotoCaptureSession:
     """Interactive photo capture session for enrollment."""
 
@@ -271,6 +286,18 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # Check if GUI is available - this tool requires interactive GUI
+    if not check_gui_available():
+        logger.error("OpenCV GUI (highgui) is not available.")
+        logger.error("This tool requires a GUI for interactive photo capture.")
+        logger.error("")
+        logger.error("Options:")
+        logger.error("  1. Use 'auto_enroll.py' instead (works in headless mode)")
+        logger.error("  2. Install opencv-python with GUI support:")
+        logger.error("     pip uninstall opencv-python opencv-python-headless")
+        logger.error("     pip install opencv-python")
+        return
 
     # Validate person name
     person_name = args.person.strip().lower()

@@ -1,8 +1,9 @@
 # Bioguard Configuration File
 
 camera:
-  backend: picamera2  # or video_file
-  resolution: [1280, 720]  # 720p HD - widely supported (was 800x600, unsupported by most USB cameras)
+  # backend: picamera2  # or video_file, usb
+  backend: usb
+  resolution: [640, 480]
   fps: 30
   video_path: null  # for video_file backend
 
@@ -16,7 +17,7 @@ tracking:
 
 quality:
   min_face_quality: 0.3    # Runtime: filter low-quality faces
-  min_enroll_quality: 0.7  # Enrollment: stricter quality for enrolled photos
+  min_enroll_quality: 0.8  # Enrollment: stricter quality for enrolled photos
   min_bbox_size: 40  # pixels (minimum face bounding box size)
   blur_threshold: 100.0  # Laplacian variance = blur measure (threshold lowered for faster recognition)
 
@@ -27,9 +28,9 @@ fusion:
   confidence_decay_threshold: 10  # Number of inconsistent frames before dropping FRIENDLY status (increased for stability)
 
 thresholds:
-  t_accept: 0.65  # Minimum score for FRIENDLY (kept at 0.5 since scores are 0.6+)
-  t_margin: 0.03  # Minimum margin (reduced from 0.07 - likely the main issue!)
-  t_timeout: 10.0  # seconds (increased from 8.0 to give even more time)
+  t_accept: 0.85  # Minimum score for FRIENDLY (for higher precision)
+  t_margin: 0.03  # Minimum margin (difference between top two scores to accept FRIENDLY)
+  t_timeout: 10.0  # seconds (increased from 8.0 to give more time)
 
 index:
   face_index_path: data/index/face.index

@@ -35,6 +35,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def check_gui_available() -> bool:
+    """Check if OpenCV GUI (highgui) is available.
+
+    Returns:
+        True if GUI is available, False otherwise
+    """
+    try:
+        # Try to create and destroy a test window
+        cv2.namedWindow("__test__", cv2.WINDOW_NORMAL)
+        cv2.destroyWindow("__test__")
+        return True
+    except cv2.error:
+        return False
+
+
 class AutoEnrollmentSession:
     """Automatic enrollment session with confidence-based capture."""
 
@@ -45,7 +60,8 @@ class AutoEnrollmentSession:
         target_confidence: float = 0.85,
         min_photos: int = 5,
         max_photos: int = 30,
-        test_interval: int = 3
+        test_interval: int = 3,
+        headless: bool = False
     ):
         """Initialize auto-enrollment session.
 
@@ -56,6 +72,7 @@ class AutoEnrollmentSession:
             min_photos: Minimum photos before testing
             max_photos: Maximum photos to capture
             test_interval: Test recognition every N photos
+            headless: Run without GUI (no preview window)
         """
         self.person_id = person_id
         self.config = config
@@ -63,6 +80,7 @@ class AutoEnrollmentSession:
         self.min_photos = min_photos
         self.max_photos = max_photos
         self.test_interval = test_interval
+        self.headless = headless
 
         # Output directory
         self.output_dir = Path("friendly") / person_id
@@ -285,7 +303,10 @@ class AutoEnrollmentSession:
         logger.info("  - Move your head slowly: left, right, up, down")
         logger.info("  - Change expressions: neutral, smiling")
         logger.info("  - System will auto-capture when face quality is good")
-        logger.info("  - Press 'q' to stop early")
+        if not self.headless:
+            logger.info("  - Press 'q' to stop early")
+        else:
+            logger.info("  - Press Ctrl+C to stop early (headless mode)")
         logger.info("=" * 80)
         logger.info("")
 
@@ -300,9 +321,6 @@ class AutoEnrollmentSession:
                 if frame is None:
                     logger.warning("Failed to get frame")
                     continue
-
-                # Show preview
-                display_frame = frame.copy()
 
                 # Try to capture
                 current_time = time.time()
@@ -324,12 +342,6 @@ class AutoEnrollmentSession:
 
                         last_capture_time = current_time
 
-                        # Draw green box on captured face
-                        x1, y1, x2, y2 = bbox.astype(int)
-                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(display_frame, "CAPTURED", (x1, y1 - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
                         # Test recognition every N photos
                         if photo_count >= self.min_photos and photo_count % self.test_interval == 0:
                             logger.info(f"\n  Testing recognition confidence...")
@@ -345,31 +357,46 @@ class AutoEnrollmentSession:
                                 logger.info(f"  ✅ Auto-enrollment complete with {photo_count} photos!\n")
                                 break
 
-                # Draw status
-                status_text = f"Photos: {photo_count}/{self.max_photos}"
-                cv2.putText(display_frame, status_text, (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                # GUI preview (only if not headless)
+                if not self.headless:
+                    display_frame = frame.copy()
 
-                if photo_count >= self.min_photos:
-                    conf, _ = self.test_recognition()
-                    conf_text = f"Confidence: {conf:.2f}/{self.target_confidence:.2f}"
-                    cv2.putText(display_frame, conf_text, (10, 70),
+                    # Draw captured face box if we just captured
+                    if result is not None:
+                        x1, y1, x2, y2 = bbox.astype(int)
+                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        cv2.putText(display_frame, "CAPTURED", (x1, y1 - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                    # Draw status
+                    status_text = f"Photos: {photo_count}/{self.max_photos}"
+                    cv2.putText(display_frame, status_text, (10, 30),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
-                # Show preview
-                cv2.imshow(f"Auto-Enrollment: {self.person_id}", display_frame)
+                    if photo_count >= self.min_photos:
+                        conf, _ = self.test_recognition()
+                        conf_text = f"Confidence: {conf:.2f}/{self.target_confidence:.2f}"
+                        cv2.putText(display_frame, conf_text, (10, 70),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
-                # Check for quit
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    logger.info("\n  Stopped by user")
-                    break
+                    # Show preview
+                    cv2.imshow(f"Auto-Enrollment: {self.person_id}", display_frame)
+
+                    # Check for quit
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        logger.info("\n  Stopped by user")
+                        break
+                else:
+                    # In headless mode, add a small delay to prevent CPU spinning
+                    time.sleep(0.01)
 
         except KeyboardInterrupt:
             logger.info("\n  Interrupted by user")
 
         finally:
-            cv2.destroyAllWindows()
+            if not self.headless:
+                cv2.destroyAllWindows()
             if self.camera:
                 self.camera.release()
 
@@ -419,8 +446,17 @@ def main():
                         help="Test recognition every N photos")
     parser.add_argument("--auto-enroll", action="store_true",
                         help="Automatically run enrollment after capture")
+    parser.add_argument("--headless", action="store_true",
+                        help="Run without GUI preview (auto-detected if GUI unavailable)")
 
     args = parser.parse_args()
+
+    # Check if GUI is available, fall back to headless if not
+    headless = args.headless
+    if not headless and not check_gui_available():
+        logger.warning("OpenCV GUI (highgui) not available - running in headless mode")
+        logger.info("To see preview, install opencv-python with GUI support or use MJPEG stream")
+        headless = True
 
     # Load config
     config = Config(args.config)
@@ -432,7 +468,8 @@ def main():
         target_confidence=args.target_confidence,
         min_photos=args.min_photos,
         max_photos=args.max_photos,
-        test_interval=args.test_interval
+        test_interval=args.test_interval,
+        headless=headless
     )
 
     # Initialize

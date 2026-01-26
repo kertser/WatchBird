@@ -242,6 +242,44 @@ class TrackStateMachine:
                     )
                     return True
 
+        elif self.state == TrackState.ENEMY:
+            # Continue detection to avoid false positives
+            # ENEMY can transition back to FRIENDLY if properly identified
+            person_id, metrics = self.aggregator.get_aggregated_decision(
+                consistency_count=self.consistency_count
+            )
+
+            if person_id is not None and metrics:
+                median_score = metrics.get("median_score", 0.0)
+                median_margin = metrics.get("median_margin", 0.0)
+                consistency = metrics.get("consistency", 0)
+
+                # Log decision criteria for debugging
+                logger.debug(
+                    f"Track {self.track_id} (ENEMY): person={person_id}, "
+                    f"score={median_score:.3f} (need>={self.t_accept:.2f}), "
+                    f"margin={median_margin:.3f} (need>={self.t_margin:.2f}), "
+                    f"consistency={consistency} (need>={self.consistency_count})"
+                )
+
+                # Check for FRIENDLY transition (same criteria as from SUSPECT)
+                if (
+                    median_score >= self.t_accept and
+                    median_margin >= self.t_margin and
+                    consistency >= self.consistency_count
+                ):
+                    self.state = TrackState.FRIENDLY
+                    self.person_id = person_id
+                    self.confidence = median_score
+                    self.inconsistent_frame_count = 0
+
+                    logger.info(
+                        f"Track {self.track_id} ENEMY → FRIENDLY ({person_id}, "
+                        f"conf={median_score:.3f}, margin={median_margin:.3f}, "
+                        f"consistency={consistency}) - false positive corrected!"
+                    )
+                    return True
+
         return False
 
     def get_event(self) -> Dict:
@@ -261,12 +299,14 @@ class TrackStateMachine:
         return event
 
     def is_terminal(self) -> bool:
-        """Check if state is terminal (only ENEMY).
+        """Check if state is terminal.
 
         FRIENDLY is not terminal - we continue comparing faces.
+        ENEMY is not terminal - we continue detection to avoid false positives.
+        A person marked as ENEMY can still be re-identified as FRIENDLY.
 
         Returns:
-            True if in terminal state
+            True if in terminal state (currently always False)
         """
-        return self.state == TrackState.ENEMY
+        return False  # Continue detection for all states
 
