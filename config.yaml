@@ -28,7 +28,7 @@ fusion:
   confidence_decay_threshold: 10  # Number of inconsistent frames before dropping FRIENDLY status (increased for stability)
 
 thresholds:
-  t_accept: 0.85  # Minimum score for FRIENDLY (for higher precision)
+  t_accept: 0.81  # Minimum score for FRIENDLY (for higher precision)
   t_margin: 0.03  # Minimum margin between top two scores to accept FRIENDLY
   t_timeout: 10.0  # seconds (increased from 8.0 to give more time)
   identity_switch_margin: 0.15  # Extra margin required to switch to a different person
@@ -41,6 +41,7 @@ models:
   face_detector: models/yunet.onnx
   #face_embedder: models/mobilefacenet.onnx
   face_embedder: models/arcface_r100.onnx
+  #face_embedder: models/adaface_r100.onnx
 
 stream:
   enabled: true
