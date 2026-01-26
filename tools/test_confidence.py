@@ -5,16 +5,29 @@ import cv2
 import numpy as np
 from pathlib import Path
 
+from watchbird.config import Config
 from watchbird.detect.face_detector import FaceDetector
 from watchbird.embed.face_embedder import FaceEmbedder
 from watchbird.index.faiss_wrapper import FaissIndex
 from watchbird.utils.image_ops import extract_roi
 
+# Load config
+config = Config("config.yaml")
+
 # Initialize
-detector = FaceDetector("models/yunet.onnx", 0.7)
+detector = FaceDetector(
+    model_path=config.models.get("face_detector"),
+    conf_threshold=config.detection["face_conf_threshold"],
+    use_gpu=config.inference.get("use_gpu", True),
+    gpu_device_id=config.inference.get("gpu_device_id", 0)
+)
 detector.load()
 
-embedder = FaceEmbedder("models/mobilefacenet.onnx")
+embedder = FaceEmbedder(
+    model_path=config.models.get("face_embedder"),
+    use_gpu=config.inference.get("use_gpu", True),
+    gpu_device_id=config.inference.get("gpu_device_id", 0)
+)
 embedder.load()
 
 # Find mike's photos

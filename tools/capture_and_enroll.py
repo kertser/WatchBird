@@ -317,8 +317,10 @@ def main() -> None:
 
         # Initialize face detector
         face_detector = FaceDetector(
-            model_path=config.models.get("face_detector", "models/yunet.onnx"),
-            conf_threshold=config.detection["face_conf_threshold"]
+            model_path=config.models.get("face_detector"),
+            conf_threshold=config.detection["face_conf_threshold"],
+            use_gpu=config.inference.get("use_gpu", True),
+            gpu_device_id=config.inference.get("gpu_device_id", 0)
         )
 
         if not face_detector.load():

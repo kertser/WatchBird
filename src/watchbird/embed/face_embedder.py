@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -22,21 +22,80 @@ REFERENCE_POINTS_112 = np.array([
 ], dtype=np.float32)
 
 
+def get_available_providers() -> List[str]:
+    """Get list of available ONNX Runtime execution providers.
+
+    Returns:
+        List of available provider names
+    """
+    return ort.get_available_providers()
+
+
+def get_optimal_providers(use_gpu: bool = True, gpu_device_id: int = 0) -> List[Tuple[str, dict]]:
+    """Get optimal execution providers based on availability and preference.
+
+    Args:
+        use_gpu: Whether to try GPU providers first
+        gpu_device_id: GPU device ID to use
+
+    Returns:
+        List of (provider_name, options) tuples in priority order
+    """
+    available = get_available_providers()
+    providers = []
+
+    if use_gpu:
+        # CUDA (NVIDIA) - best performance on NVIDIA GPUs
+        if 'CUDAExecutionProvider' in available:
+            providers.append(('CUDAExecutionProvider', {
+                'device_id': gpu_device_id,
+                'arena_extend_strategy': 'kNextPowerOfTwo',
+                'gpu_mem_limit': 2 * 1024 * 1024 * 1024,  # 2GB limit
+                'cudnn_conv_algo_search': 'EXHAUSTIVE',
+            }))
+            logger.info(f"CUDA GPU provider available (device {gpu_device_id})")
+
+        # DirectML (Windows - works with AMD, Intel, NVIDIA)
+        if 'DmlExecutionProvider' in available:
+            providers.append(('DmlExecutionProvider', {
+                'device_id': gpu_device_id,
+            }))
+            logger.info(f"DirectML GPU provider available (device {gpu_device_id})")
+
+        # TensorRT (NVIDIA optimized)
+        if 'TensorrtExecutionProvider' in available:
+            providers.append(('TensorrtExecutionProvider', {
+                'device_id': gpu_device_id,
+            }))
+            logger.info(f"TensorRT provider available (device {gpu_device_id})")
+
+    # Always include CPU as fallback
+    providers.append(('CPUExecutionProvider', {}))
+
+    return providers
+
+
 class FaceEmbedder:
     """Face embedding extractor using ONNX model (MobileFaceNet/ArcFace)."""
 
-    def __init__(self, model_path: str, embedding_size: int = 128):
+    def __init__(self, model_path: str, embedding_size: int = 128,
+                 use_gpu: bool = True, gpu_device_id: int = 0):
         """Initialize face embedder.
 
         Args:
             model_path: Path to ONNX model
             embedding_size: Size of face embedding vector
+            use_gpu: Whether to use GPU acceleration if available
+            gpu_device_id: GPU device ID to use
         """
         self.model_path = Path(model_path)
         self.embedding_size = embedding_size
+        self.use_gpu = use_gpu
+        self.gpu_device_id = gpu_device_id
         self.session = None
         self.input_name = None
         self.input_shape = None
+        self.active_provider = None
 
         # Landmark detector for face alignment (lazy loaded)
         self._landmark_detector = None
@@ -52,11 +111,27 @@ class FaceEmbedder:
             return False
 
         try:
-            # Create ONNX Runtime session
+            # Get optimal providers based on GPU preference
+            providers = get_optimal_providers(self.use_gpu, self.gpu_device_id)
+            provider_names = [p[0] for p in providers]
+            provider_options = [p[1] for p in providers]
+
+            logger.info(f"Attempting to load model with providers: {provider_names}")
+
+            # Create session options for better performance
+            sess_options = ort.SessionOptions()
+            sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+            # Create ONNX Runtime session with GPU support
             self.session = ort.InferenceSession(
                 str(self.model_path),
-                providers=['CPUExecutionProvider']
+                sess_options=sess_options,
+                providers=list(zip(provider_names, provider_options))
             )
+
+            # Log which provider is actually being used
+            self.active_provider = self.session.get_providers()[0]
+            logger.info(f"Face embedder using: {self.active_provider}")
 
             # Get input details
             self.input_name = self.session.get_inputs()[0].name

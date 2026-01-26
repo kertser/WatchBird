@@ -13,17 +13,23 @@ logger = logging.getLogger(__name__)
 class FaceDetector:
     """Face detector using OpenCV YuNet."""
 
-    def __init__(self, model_path: str, conf_threshold: float = 0.7):
+    def __init__(self, model_path: str, conf_threshold: float = 0.7,
+                 use_gpu: bool = True, gpu_device_id: int = 0):
         """Initialize face detector.
 
         Args:
             model_path: Path to YuNet ONNX model
             conf_threshold: Confidence threshold for detections
+            use_gpu: Whether to use GPU acceleration if available
+            gpu_device_id: GPU device ID to use
         """
         self.model_path = Path(model_path)
         self.conf_threshold = conf_threshold
+        self.use_gpu = use_gpu
+        self.gpu_device_id = gpu_device_id
         self.detector = None
         self.input_size = (320, 320)
+        self.backend_used = "CPU"
 
     def load(self) -> bool:
         """Load face detection model.
@@ -42,6 +48,7 @@ class FaceDetector:
                     self.input_size,
                     self.conf_threshold
                 )
+                self.backend_used = "CPU (built-in)"
             else:
                 self.detector = cv2.FaceDetectorYN.create(
                     str(self.model_path),
@@ -50,12 +57,40 @@ class FaceDetector:
                     self.conf_threshold
                 )
 
-            logger.info("Loaded face detector (YuNet)")
+                # Try to set GPU backend if requested
+                if self.use_gpu:
+                    self._try_set_gpu_backend()
+
+            logger.info(f"Loaded face detector (YuNet) - backend: {self.backend_used}")
             return True
 
         except Exception as e:
             logger.error(f"Failed to load face detector: {e}")
             return False
+
+    def _try_set_gpu_backend(self) -> None:
+        """Try to set GPU backend for face detection."""
+        # OpenCV backend constants
+        # DNN_BACKEND_DEFAULT = 0, DNN_BACKEND_OPENCV = 3, DNN_BACKEND_CUDA = 5
+        # DNN_TARGET_CPU = 0, DNN_TARGET_CUDA = 6, DNN_TARGET_CUDA_FP16 = 7
+
+        try:
+            # Check if CUDA is available in OpenCV
+            cuda_devices = cv2.cuda.getCudaEnabledDeviceCount()
+            if cuda_devices > 0:
+                # Set CUDA backend
+                # backend_id: 5 = DNN_BACKEND_CUDA, target_id: 6 = DNN_TARGET_CUDA
+                self.detector.setPreferableBackend(5)  # DNN_BACKEND_CUDA
+                self.detector.setPreferableTarget(6)   # DNN_TARGET_CUDA
+                self.backend_used = f"CUDA (device {self.gpu_device_id})"
+                logger.info(f"Face detector using CUDA GPU (found {cuda_devices} device(s))")
+                return
+        except (AttributeError, cv2.error) as e:
+            logger.debug(f"CUDA not available for face detector: {e}")
+
+        # OpenCV doesn't support DirectML directly, stay on CPU
+        self.backend_used = "CPU (GPU not available for YuNet)"
+        logger.debug("Face detector will use CPU (no CUDA support in OpenCV)")
 
     def detect(self, image: np.ndarray, try_rotations: bool = True) -> Tuple[List[np.ndarray], List[float], List[np.ndarray]]:
         """Detect faces in image.

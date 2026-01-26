@@ -16,6 +16,12 @@ dependencies = [
 rpi = [
     "picamera2>=0.3.0",
 ]
+gpu-cuda = [
+    "onnxruntime-gpu>=1.17.0",  # NVIDIA CUDA support
+]
+gpu-directml = [
+    "onnxruntime-directml>=1.17.0",  # Windows DirectML (AMD/Intel/NVIDIA)
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",

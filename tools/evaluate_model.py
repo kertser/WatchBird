@@ -36,7 +36,9 @@ def evaluate_model(data_dir: Path, config_path: str):
     print("\n1. Loading face detector...")
     face_detector = FaceDetector(
         model_path=config.models.get("face_detector", "models/yunet.onnx"),
-        conf_threshold=config.detection["face_conf_threshold"]
+        conf_threshold=config.detection["face_conf_threshold"],
+        use_gpu=config.inference.get("use_gpu", True),
+        gpu_device_id=config.inference.get("gpu_device_id", 0)
     )
     if not face_detector.load():
         print("✗ Failed to load face detector")
@@ -46,7 +48,9 @@ def evaluate_model(data_dir: Path, config_path: str):
     # Load face embedder
     print("\n2. Loading face embedder...")
     face_embedder = FaceEmbedder(
-        model_path=config.models.get("face_embedder", "models/mobilefacenet.onnx")
+        model_path=config.models.get("face_embedder"),
+        use_gpu=config.inference.get("use_gpu", True),
+        gpu_device_id=config.inference.get("gpu_device_id", 0)
     )
     if not face_embedder.load():
         print("✗ Failed to load face embedder")

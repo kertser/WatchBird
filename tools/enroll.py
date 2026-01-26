@@ -189,8 +189,10 @@ def main() -> None:
     logger.info("Loading models...")
 
     face_detector = FaceDetector(
-        model_path=config.models.get("face_detector", ""),
-        conf_threshold=config.detection["face_conf_threshold"]
+        model_path=config.models.get("face_detector"),
+        conf_threshold=config.detection["face_conf_threshold"],
+        use_gpu=config.inference.get("use_gpu", True),
+        gpu_device_id=config.inference.get("gpu_device_id", 0)
     )
 
     if not face_detector.load():
@@ -198,7 +200,9 @@ def main() -> None:
         return
 
     face_embedder = FaceEmbedder(
-        model_path=config.models.get("face_embedder", "models/mobilefacenet.onnx")
+        model_path=config.models.get("face_embedder"),
+        use_gpu=config.inference.get("use_gpu", True),
+        gpu_device_id=config.inference.get("gpu_device_id", 0)
     )
 
     if not face_embedder.load():

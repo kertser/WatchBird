@@ -24,9 +24,14 @@ def check_enrollment_photos(data_dir: Path, config_path: str = "config.yaml"):
     config = Config(config_path)
 
     # Load face detector
+    use_gpu = config.inference.get("use_gpu", True) if hasattr(config, 'inference') else True
+    gpu_device_id = config.inference.get("gpu_device_id", 0) if hasattr(config, 'inference') else 0
+
     face_detector = FaceDetector(
-        model_path=config.models.get("face_detector", "models/yunet.onnx"),
-        conf_threshold=config.detection["face_conf_threshold"]
+        model_path=config.models.get("face_detector"),
+        conf_threshold=config.detection["face_conf_threshold"],
+        use_gpu=use_gpu,
+        gpu_device_id=gpu_device_id
     )
     if not face_detector.load():
         print("✗ Failed to load face detector")

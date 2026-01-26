@@ -16,6 +16,20 @@ python tools/download_models.py
 python tools/test_installation.py
 ```
 
+### GPU Acceleration (Optional but Recommended)
+
+For faster and more accurate inference, install GPU support:
+
+```bash
+# NVIDIA GPU (CUDA) - Best performance
+pip install onnxruntime-gpu
+
+# Windows with any GPU (AMD, Intel, or NVIDIA via DirectML)
+pip install onnxruntime-directml
+```
+
+> **Note:** GPU acceleration is enabled by default in `config.yaml`. Set `use_gpu: false` under `inference` to disable it.
+
 ## 2. Enroll People
 
 ### Option A: Auto-Enrollment (Recommended)

@@ -116,8 +116,10 @@ class AutoEnrollmentSession:
 
         # Face detector
         self.face_detector = FaceDetector(
-            model_path=self.config.models.get("face_detector", ""),
-            conf_threshold=self.config.detection["face_conf_threshold"]
+            model_path=self.config.models.get("face_detector"),
+            conf_threshold=self.config.detection["face_conf_threshold"],
+            use_gpu=self.config.inference.get("use_gpu", True),
+            gpu_device_id=self.config.inference.get("gpu_device_id", 0)
         )
 
         if not self.face_detector.load():
@@ -126,7 +128,9 @@ class AutoEnrollmentSession:
 
         # Face embedder
         self.face_embedder = FaceEmbedder(
-            model_path=self.config.models.get("face_embedder", "models/mobilefacenet.onnx")
+            model_path=self.config.models.get("face_embedder"),
+            use_gpu=self.config.inference.get("use_gpu", True),
+            gpu_device_id=self.config.inference.get("gpu_device_id", 0)
         )
 
         if not self.face_embedder.load():

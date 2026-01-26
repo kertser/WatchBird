@@ -118,3 +118,8 @@ class Config:
         """Get stream configuration."""
         return self._config["stream"]
 
+    @property
+    def inference(self) -> Dict[str, Any]:
+        """Get inference configuration (GPU settings)."""
+        return self._config.get("inference", {"use_gpu": False, "gpu_device_id": 0})
+
