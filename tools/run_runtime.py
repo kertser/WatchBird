@@ -202,7 +202,8 @@ class RecognitionPipeline:
                     t_timeout=self.config.thresholds["t_timeout"],
                     consistency_count=self.config.fusion["consistency_count"],
                     window_size=self.config.fusion["window_size"],
-                    confidence_decay_threshold=self.config.fusion.get("confidence_decay_threshold", 3)
+                    confidence_decay_threshold=self.config.fusion.get("confidence_decay_threshold", 3),
+                    identity_switch_margin=self.config.thresholds.get("identity_switch_margin", 0.10)
                 )
                 # Initialize frame counter for this track
                 self.track_frame_counters[track_id] = 0

@@ -28,7 +28,8 @@ class TrackStateMachine:
         t_timeout: float = 5.0,
         consistency_count: int = 6,
         window_size: int = 10,
-        confidence_decay_threshold: int = 3
+        confidence_decay_threshold: int = 3,
+        identity_switch_margin: float = 0.10
     ):
         """Initialize track state machine.
 
@@ -40,6 +41,7 @@ class TrackStateMachine:
             consistency_count: Minimum consistency frames required
             window_size: Temporal aggregation window size
             confidence_decay_threshold: Number of inconsistent frames before dropping FRIENDLY
+            identity_switch_margin: Extra margin required to switch to different person
         """
         self.track_id = track_id
         self.t_accept = t_accept
@@ -47,6 +49,7 @@ class TrackStateMachine:
         self.t_timeout = t_timeout
         self.consistency_count = consistency_count
         self.confidence_decay_threshold = confidence_decay_threshold
+        self.identity_switch_margin = identity_switch_margin
 
         self.state = TrackState.SUSPECT
         self.person_id: Optional[str] = None
@@ -55,6 +58,11 @@ class TrackStateMachine:
 
         # Tracks consecutive frames with inconsistent detection while FRIENDLY
         self.inconsistent_frame_count: int = 0
+
+        # Locked identity - once identified, this person is "locked in"
+        # and requires much stronger evidence to switch to a different person
+        self.locked_person_id: Optional[str] = None
+        self.locked_confidence: float = 0.0
 
         self.aggregator = TemporalAggregator(window_size=window_size)
         self.modalities_used: Dict[str, float] = {}
@@ -119,15 +127,28 @@ class TrackStateMachine:
                 )
 
                 # Check acceptance criteria
+                # If we were previously locked to a different person, require higher margin
+                required_margin = self.t_margin
+                if self.locked_person_id is not None and person_id != self.locked_person_id:
+                    required_margin = self.t_margin + self.identity_switch_margin
+                    logger.debug(
+                        f"Track {self.track_id}: identity switch from {self.locked_person_id} to {person_id} "
+                        f"requires margin {required_margin:.3f}"
+                    )
+
                 if (
                     median_score >= self.t_accept and
-                    median_margin >= self.t_margin and
+                    median_margin >= required_margin and
                     consistency >= self.consistency_count
                 ):
                     self.state = TrackState.FRIENDLY
                     self.person_id = person_id
                     self.confidence = median_score
                     self.inconsistent_frame_count = 0
+
+                    # Lock this identity
+                    self.locked_person_id = person_id
+                    self.locked_confidence = median_score
 
                     logger.info(
                         f"Track {self.track_id} → FRIENDLY ({person_id}, "
