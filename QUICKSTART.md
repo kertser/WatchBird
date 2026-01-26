@@ -34,7 +34,8 @@ pip install onnxruntime-directml
 
 ### Option A: Auto-Enrollment (Recommended)
 
-Automatically captures photos until recognition confidence is high enough:
+Automatically captures photos until recognition confidence is high enough.
+Works in headless mode (no GUI required):
 
 ```bash
 python tools/auto_enroll.py --person yourname --auto-enroll
@@ -45,14 +46,27 @@ During capture:
 - Slowly move head: left, right, up, down
 - Change expressions: neutral, smiling
 - System stops when confidence reaches 85%
+- Press Ctrl+C to stop early
 
 ### Option B: Manual Capture
 
+Interactive photo capture with preview. Works in two modes:
+
+**With GUI (if available):**
 ```bash
 python tools/capture_and_enroll.py --person yourname --count 15 --auto-enroll
 ```
-
 Press SPACE to capture each photo.
+
+**Headless mode (MJPEG streaming):**
+```bash
+python tools/capture_and_enroll.py --person yourname --count 15 --auto-enroll --headless
+```
+- View preview at: `http://localhost:8080/stream`
+- Press ENTER to capture each photo
+- Type 'q' + ENTER to finish early
+
+> **Note:** If OpenCV GUI is not available, headless mode is automatically enabled.
 
 ## 3. Run Recognition
 

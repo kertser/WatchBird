@@ -3,6 +3,8 @@
 
 import argparse
 import logging
+import sys
+import threading
 import time
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -13,6 +15,7 @@ from watchbird.config import Config
 from watchbird.detect.face_detector import FaceDetector
 from watchbird.camera.usb_backend import USBCameraBackend
 from watchbird.camera.video_backend import VideoBackend
+from watchbird.stream.mjpeg_server import MJPEGServer
 try:
     from watchbird.camera.picamera_backend import Picamera2Backend
 except ImportError:
@@ -46,7 +49,8 @@ class PhotoCaptureSession:
     """Interactive photo capture session for enrollment."""
 
     def __init__(self, person_name: str, output_dir: Path, face_detector: FaceDetector,
-                 camera, config: Config, target_count: int = 10):
+                 camera, config: Config, target_count: int = 10, headless: bool = False,
+                 stream_port: int = 8080):
         """Initialize capture session.
 
         Args:
@@ -56,6 +60,8 @@ class PhotoCaptureSession:
             camera: Camera backend instance
             config: Configuration
             target_count: Number of photos to capture
+            headless: Run in headless mode with MJPEG streaming
+            stream_port: Port for MJPEG stream in headless mode
         """
         self.person_name = person_name
         self.output_dir = output_dir
@@ -63,9 +69,38 @@ class PhotoCaptureSession:
         self.camera = camera
         self.config = config
         self.target_count = target_count
+        self.headless = headless
+        self.stream_port = stream_port
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.captured_photos: List[Tuple[np.ndarray, float, np.ndarray, float]] = []  # (image, quality, bbox, conf)
+
+        # For headless mode
+        self.mjpeg_server: Optional[MJPEGServer] = None
+        self.capture_requested = False
+        self.quit_requested = False
+        self.cancel_requested = False
+
+    def _keyboard_listener(self):
+        """Listen for keyboard input in headless mode."""
+        logger.info("Keyboard listener started. Commands: ENTER=capture, q=finish, ESC/Ctrl+C=cancel")
+        try:
+            while not self.quit_requested and not self.cancel_requested:
+                try:
+                    user_input = input()
+                    if user_input.lower() == 'q':
+                        self.quit_requested = True
+                        logger.info("Quit requested...")
+                    elif user_input.lower() == 'esc' or user_input == '\x1b':
+                        self.cancel_requested = True
+                        logger.info("Cancel requested...")
+                    else:
+                        # Any other input (including empty ENTER) triggers capture
+                        self.capture_requested = True
+                except EOFError:
+                    break
+        except Exception as e:
+            logger.debug(f"Keyboard listener ended: {e}")
 
     def run(self) -> bool:
         """Run interactive capture session.
@@ -76,10 +111,30 @@ class PhotoCaptureSession:
         logger.info(f"Starting photo capture for: {self.person_name}")
         logger.info(f"Target: {self.target_count} photos")
         logger.info("")
-        logger.info("Instructions:")
-        logger.info("  - Press SPACE to capture a photo")
-        logger.info("  - Press 'q' to finish early")
-        logger.info("  - Press ESC to cancel")
+
+        if self.headless:
+            # Start MJPEG server for preview
+            self.mjpeg_server = MJPEGServer(host="0.0.0.0", port=self.stream_port)
+            self.mjpeg_server.start()
+            logger.info("")
+            logger.info("=" * 60)
+            logger.info(f"📺 VIEW PREVIEW: http://localhost:{self.stream_port}/stream")
+            logger.info("=" * 60)
+            logger.info("")
+            logger.info("Instructions (headless mode):")
+            logger.info("  - Press ENTER to capture a photo")
+            logger.info("  - Type 'q' + ENTER to finish early")
+            logger.info("  - Press Ctrl+C to cancel")
+
+            # Start keyboard listener thread
+            keyboard_thread = threading.Thread(target=self._keyboard_listener, daemon=True)
+            keyboard_thread.start()
+        else:
+            logger.info("Instructions:")
+            logger.info("  - Press SPACE to capture a photo")
+            logger.info("  - Press 'q' to finish early")
+            logger.info("  - Press ESC to cancel")
+
         logger.info("")
         logger.info("Tips for best results:")
         logger.info("  - Vary your head position (straight, left, right, up, down)")
@@ -93,6 +148,15 @@ class PhotoCaptureSession:
 
         try:
             while capture_count < self.target_count:
+                # Check for quit/cancel in headless mode
+                if self.headless:
+                    if self.cancel_requested:
+                        logger.info("Capture cancelled by user")
+                        return False
+                    if self.quit_requested:
+                        logger.info(f"Finishing early with {capture_count} photos")
+                        break
+
                 # Get frame
                 frame = self.camera.get_frame()
                 if frame is None:
@@ -113,9 +177,14 @@ class PhotoCaptureSession:
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
                 # Instructions
-                cv2.putText(display_frame, "SPACE: Capture | Q: Finish | ESC: Cancel",
-                           (10, display_frame.shape[0] - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                if self.headless:
+                    cv2.putText(display_frame, "ENTER: Capture | Q: Finish",
+                               (10, display_frame.shape[0] - 10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                else:
+                    cv2.putText(display_frame, "SPACE: Capture | Q: Finish | ESC: Cancel",
+                               (10, display_frame.shape[0] - 10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
                 # Draw face boxes
                 best_face_idx = -1
@@ -149,22 +218,39 @@ class PhotoCaptureSession:
                     cv2.putText(display_frame, "No face detected", (10, 60),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-                # Show frame
-                cv2.imshow(f"Capture: {self.person_name}", display_frame)
+                # Handle capture request (headless mode)
+                should_capture = False
+                if self.headless:
+                    # Update MJPEG stream
+                    self.mjpeg_server.update_frame(display_frame)
 
-                # Handle keys
-                key = cv2.waitKey(1) & 0xFF
+                    if self.capture_requested:
+                        self.capture_requested = False
+                        should_capture = True
 
-                if key == 27:  # ESC
-                    logger.info("Capture cancelled by user")
-                    cv2.destroyAllWindows()
-                    return False
+                    # Small delay to prevent CPU spinning
+                    time.sleep(0.033)  # ~30 FPS
+                else:
+                    # Show frame (GUI mode)
+                    cv2.imshow(f"Capture: {self.person_name}", display_frame)
 
-                elif key == ord('q'):  # Q
-                    logger.info(f"Finishing early with {capture_count} photos")
-                    break
+                    # Handle keys
+                    key = cv2.waitKey(1) & 0xFF
 
-                elif key == ord(' '):  # SPACE
+                    if key == 27:  # ESC
+                        logger.info("Capture cancelled by user")
+                        cv2.destroyAllWindows()
+                        return False
+
+                    elif key == ord('q'):  # Q
+                        logger.info(f"Finishing early with {capture_count} photos")
+                        break
+
+                    elif key == ord(' '):  # SPACE
+                        should_capture = True
+
+                # Process capture
+                if should_capture:
                     if best_face_idx >= 0:
                         # Capture photo
                         bbox = bboxes[best_face_idx]
@@ -183,18 +269,36 @@ class PhotoCaptureSession:
                         logger.info(f"  ✓ Captured photo {capture_count}/{self.target_count} "
                                    f"(quality={quality:.3f}, conf={conf:.2f})")
 
-                        # Visual feedback
-                        feedback_frame = display_frame.copy()
-                        cv2.putText(feedback_frame, "CAPTURED!",
-                                   (display_frame.shape[1]//2 - 100, display_frame.shape[0]//2),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 4)
-                        cv2.imshow(f"Capture: {self.person_name}", feedback_frame)
-                        cv2.waitKey(500)  # Show for 500ms
+                        if self.headless:
+                            # Visual feedback on stream
+                            feedback_frame = display_frame.copy()
+                            cv2.putText(feedback_frame, "CAPTURED!",
+                                       (display_frame.shape[1]//2 - 100, display_frame.shape[0]//2),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 4)
+                            self.mjpeg_server.update_frame(feedback_frame)
+                            time.sleep(0.5)  # Show for 500ms
+                        else:
+                            # Visual feedback (GUI mode)
+                            feedback_frame = display_frame.copy()
+                            cv2.putText(feedback_frame, "CAPTURED!",
+                                       (display_frame.shape[1]//2 - 100, display_frame.shape[0]//2),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 4)
+                            cv2.imshow(f"Capture: {self.person_name}", feedback_frame)
+                            cv2.waitKey(500)  # Show for 500ms
                     else:
                         logger.warning("  ✗ No face detected - cannot capture")
 
+        except KeyboardInterrupt:
+            logger.info("\n  Interrupted by user")
+            if self.headless:
+                return False
+
         finally:
-            cv2.destroyAllWindows()
+            if self.headless:
+                if self.mjpeg_server:
+                    self.mjpeg_server.stop()
+            else:
+                cv2.destroyAllWindows()
 
         if capture_count == 0:
             logger.error("No photos captured")
@@ -284,20 +388,26 @@ def main() -> None:
         action="store_true",
         help="Automatically run enrollment after capture"
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run in headless mode with MJPEG streaming (auto-enabled if no GUI)"
+    )
+    parser.add_argument(
+        "--stream-port",
+        type=int,
+        default=8080,
+        help="Port for MJPEG stream in headless mode (default: 8080)"
+    )
 
     args = parser.parse_args()
 
-    # Check if GUI is available - this tool requires interactive GUI
-    if not check_gui_available():
-        logger.error("OpenCV GUI (highgui) is not available.")
-        logger.error("This tool requires a GUI for interactive photo capture.")
-        logger.error("")
-        logger.error("Options:")
-        logger.error("  1. Use 'auto_enroll.py' instead (works in headless mode)")
-        logger.error("  2. Install opencv-python with GUI support:")
-        logger.error("     pip uninstall opencv-python opencv-python-headless")
-        logger.error("     pip install opencv-python")
-        return
+    # Check if GUI is available, fall back to headless mode if not
+    headless = args.headless
+    if not headless and not check_gui_available():
+        logger.warning("OpenCV GUI (highgui) not available - running in headless mode")
+        logger.info("View the camera stream at http://localhost:%d/stream", args.stream_port)
+        headless = True
 
     # Validate person name
     person_name = args.person.strip().lower()
@@ -361,7 +471,9 @@ def main() -> None:
             face_detector=face_detector,
             camera=camera,
             config=config,
-            target_count=args.count
+            target_count=args.count,
+            headless=headless,
+            stream_port=args.stream_port
         )
 
         if session.run():
