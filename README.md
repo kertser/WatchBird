@@ -34,14 +34,11 @@ python tools/capture_and_enroll.py --person mike --count 15 --auto-enroll
 ### 3. Run
 
 ```bash
-# USB camera (parallel pipeline - recommended, faster FPS)
-python tools/run_runtime_parallel.py --backend usb
-
-# USB camera (sequential pipeline - simpler, lower FPS)
+# USB camera
 python tools/run_runtime.py --backend usb
 
 # Raspberry Pi camera
-python tools/run_runtime_parallel.py --backend picamera2
+python tools/run_runtime.py --backend picamera2
 ```
 
 ### 4. View Stream
@@ -89,22 +86,11 @@ fusion:
 | `auto_enroll.py` | Smart enrollment with confidence testing |
 | `capture_and_enroll.py` | Manual photo capture + enrollment |
 | `enroll.py` | Build index from existing photos |
-| `run_runtime_parallel.py` | **Main recognition pipeline (parallel, faster)** |
-| `run_runtime.py` | Recognition pipeline (sequential, simpler) |
+| `run_runtime.py` | Main recognition pipeline |
 | `check_photos.py` | Verify enrollment photo quality |
 
 ## Performance Tips
 
-### Parallel vs Sequential Pipeline
-
-| Pipeline | FPS | Use Case |
-|----------|-----|----------|
-| `run_runtime_parallel.py` | **15-17 FPS** | Production (recommended) |
-| `run_runtime.py` | 9-10 FPS | Debugging, simpler code |
-
-The parallel pipeline overlaps CPU detection with GPU embedding for ~70% faster processing.
-
-### Other optimizations:
 - Use `embedding_sample_interval: 3-5` for low-power devices
 - Lower resolution in `config.yaml` if needed
 - Use `mobilefacenet.onnx` (faster) vs `arcface_r100.onnx` (more accurate)

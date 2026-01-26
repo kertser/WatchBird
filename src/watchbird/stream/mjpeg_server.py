@@ -139,7 +139,7 @@ def draw_detection_boxes(
         color = (0, 0, 255)  # Red
         label = f"ENEMY: Track {track_id}"
     elif state == "DETECTING":
-        color = (255, 128, 0)  # Blue
+        color = (0, 165, 255)  # Orange (BGR)
         label = f"DETECTING: Track {track_id}"
     else:  # SUSPECT
         color = (0, 255, 255)  # Yellow

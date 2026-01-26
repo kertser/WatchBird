@@ -71,20 +71,15 @@ python tools/capture_and_enroll.py --person yourname --count 15 --auto-enroll --
 ## 3. Run Recognition
 
 ```bash
-# USB camera (parallel pipeline - faster, recommended)
-python tools/run_runtime_parallel.py --backend usb
-
-# USB camera (sequential pipeline - simpler)
+# USB camera
 python tools/run_runtime.py --backend usb
 
 # Raspberry Pi camera
-python tools/run_runtime_parallel.py --backend picamera2
+python tools/run_runtime.py --backend picamera2
 
 # Test with video file
-python tools/run_runtime_parallel.py --backend video_file --video test.mp4
+python tools/run_runtime.py --backend video_file --video test.mp4
 ```
-
-> **Tip:** The parallel pipeline runs ~70% faster (15-17 FPS vs 9-10 FPS) by overlapping CPU and GPU operations.
 
 ## 4. View Stream
 

@@ -140,39 +140,13 @@ Your current setup already uses GPU for the **most expensive operation** (face e
 The performance gain from CUDA OpenCV would be marginal since YuNet is already fast on CPU.
 
 ### Current Performance:
-- 7-10 FPS with DirectML face embedding
+- 13-14 FPS with DirectML face embedding (ArcFace R100)
 - This is acceptable for real-time face recognition
 
 ### If you need more FPS:
-1. **Use Parallel Pipeline** (RECOMMENDED): Run `python tools/run_runtime_parallel.py` instead of `run_runtime.py`
-   - This uses multi-threaded processing to overlap CPU and GPU work
-   - Typically achieves **2-3x higher FPS** than sequential version
-2. Reduce resolution: `[640, 480]` in config.yaml
-3. Increase `embedding_sample_interval` to 5 (embed every 5th frame)
-4. Use MobileFaceNet instead of ArcFace (smaller model)
-
-## Parallel Pipeline Architecture
-
-The parallel pipeline (`run_runtime_parallel.py`) uses 3 threads:
-
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Capture   │───►│  Detection  │───►│  Embedding  │───►│ Recognition │
-│   Thread    │    │   Thread    │    │   Thread    │    │ (Main Loop) │
-│  (Camera)   │    │ (YuNet/CPU) │    │ (GPU/DML)   │    │  (FAISS)    │
-└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-```
-
-**Why this is faster:**
-- Frame N is being captured while Frame N-1 is being detected
-- GPU embedding runs in parallel with CPU detection
-- No waiting between stages (overlapped execution)
-
-**Usage:**
-```powershell
-cd F:\Projects\WatchBird
-python tools/run_runtime_parallel.py --backend usb
-```
+1. Reduce resolution: `[640, 480]` in config.yaml
+2. Increase `embedding_sample_interval` to 5 (embed every 5th frame)
+3. Use MobileFaceNet instead of ArcFace (smaller, faster model)
 
 ## Verify CUDA Installation
 
