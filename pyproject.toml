@@ -6,22 +6,23 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26.0",
     "opencv-python>=4.9.0",
-    "onnxruntime>=1.17.0",
     "faiss-cpu>=1.8.0",
     "pyyaml>=6.0",
     "flask>=3.0.0",
 ]
 
 [project.optional-dependencies]
+# Raspberry Pi camera (Linux only)
 rpi = [
-    "picamera2>=0.3.0",
+    "picamera2>=0.3.0; sys_platform == 'linux'",
 ]
-gpu-cuda = [
-    "onnxruntime-gpu>=1.17.0",  # NVIDIA CUDA support
-]
-gpu-directml = [
-    "onnxruntime-directml>=1.17.0",  # Windows DirectML (AMD/Intel/NVIDIA)
-]
+
+# GPU acceleration (choose ONE based on your platform)
+gpu-cuda = ["onnxruntime-gpu>=1.17.0"]      # NVIDIA CUDA (Linux/Windows)
+gpu-directml = ["onnxruntime-directml>=1.17.0"]  # Windows (AMD/Intel/NVIDIA)
+cpu = ["onnxruntime>=1.17.0"]               # CPU only
+
+# Development tools
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
