@@ -2,7 +2,7 @@
 
 camera:
   backend: picamera2  # or video_file
-  resolution: [800, 600]
+  resolution: [1280, 720]  # 720p HD - widely supported (was 800x600, unsupported by most USB cameras)
   fps: 30
   video_path: null  # for video_file backend
 
