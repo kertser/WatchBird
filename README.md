@@ -1,69 +1,102 @@
 # WatchBird
 
-Real-time face recognition system for embedded devices (Raspberry Pi 4 / Jetson Nano).
+Real-time face recognition for embedded devices.
 
-## Features
-
-- **On-device processing** - No cloud dependencies
-- **Real-time tracking** - Stable track IDs with re-identification
-- **Quality gating** - Filters blur, size, and low confidence
-- **Rotated face support** - Handles tilted heads via landmark alignment
-- **MJPEG streaming** - Remote debugging via browser
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         WatchBird                               │
+│                                                                 │
+│   Camera → Detect → Track → Recognize → FRIENDLY/ENEMY         │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## Quick Start
 
-### 1. Install
-
 ```bash
-git clone <repo-url> && cd WatchBird
-python3 -m venv .venv && source .venv/bin/activate
+# Install
+git clone <repo> && cd WatchBird
+python -m venv .venv && .venv\Scripts\activate  # Windows
 pip install -e .
 python tools/download_models.py
-```
 
-### 2. Enroll People
-
-```bash
-# Auto-enrollment (recommended) - captures until 85% confidence
+# Enroll a person
 python tools/auto_enroll.py --person mike --auto-enroll
 
-# Or manual capture
-python tools/capture_and_enroll.py --person mike --count 15 --auto-enroll
+# Run
+python tools/run_runtime.py
 ```
 
-### 3. Run
+View stream: `http://localhost:8080/stream`
 
-```bash
-# USB camera
-python tools/run_runtime.py --backend usb
+## How It Works
 
-# Raspberry Pi camera
-python tools/run_runtime.py --backend picamera2
+```
+┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────┐
+│  Camera  │───▶│ Detector │───▶│   Tracker     │───▶│ Embedder │
+│  Frame   │    │  YuNet   │    │  SORT-based   │    │ ArcFace  │
+└──────────┘    └──────────┘    └───────────────┘    └────┬─────┘
+                                                          │
+                                                          ▼
+┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────┐
+│  Output  │◀───│  State   │◀───│  Aggregator   │◀───│  Scorer  │
+│ FRIENDLY │    │ Machine  │    │  Multi-frame  │    │FAISS+PLDA│
+└──────────┘    └──────────┘    └───────────────┘    └──────────┘
 ```
 
-### 4. View Stream
+### Key Concepts
 
-Open `http://<device-ip>:8080/stream` in browser.
+1. **Detection**: Find faces in each frame (YuNet)
+2. **Tracking**: Assign consistent IDs across frames (SORT)
+3. **Embedding**: Extract 512-dim face vector (MobileFaceNet)
+4. **Aggregation**: Collect multiple embeddings, compute quality-weighted centroid
+5. **Scoring**: Match against enrolled faces (FAISS + PLDA)
+6. **State Machine**: SUSPECT → FRIENDLY/ENEMY based on confidence
+
+## Embedding Aggregation
+
+Instead of matching each frame individually (noisy), we aggregate multiple embeddings:
+
+```
+Frame 1 ──▶ Embedding 1 ─┐
+Frame 2 ──▶ Embedding 2 ─┼──▶ Quality-Weighted ──▶ Match vs
+Frame 3 ──▶ Embedding 3 ─┤    Centroid            Database
+  ...                    │
+Frame N ──▶ Embedding N ─┘
+                         │
+                   Outliers filtered
+                   Low-quality rejected
+```
+
+Quality factors:
+- Detection confidence (40%)
+- Blur score (25%) - sharper is better
+- Brightness (15%) - optimal ~0.5
+- Face size (20%) - larger is better
 
 ## Classification States
 
+```
+         ┌─────────────────────────────────┐
+         │                                 │
+         ▼                                 │
+    ┌─────────┐   confidence >= 0.78   ┌───┴─────┐
+───▶│ SUSPECT │───────────────────────▶│FRIENDLY │
+    └────┬────┘   + margin >= 0.20     └─────────┘
+         │        + consistency >= 12
+         │
+         │  timeout (15s)
+         ▼
+    ┌─────────┐
+    │  ENEMY  │
+    └─────────┘
+```
+
 | State | Color | Meaning |
 |-------|-------|---------|
-| SUSPECT | Yellow | Analyzing (< 5 seconds) |
-| FRIENDLY | Green | Identified as enrolled person |
-| ENEMY | Red | Unknown after timeout |
-
-## Project Structure
-
-```
-WatchBird/
-├── config.yaml          # Configuration
-├── models/              # ONNX models (yunet, mobilefacenet)
-├── friendly/            # Enrollment photos by person
-├── data/index/          # FAISS index + metadata
-├── src/watchbird/       # Main package
-└── tools/               # CLI tools
-```
+| SUSPECT | Yellow | Unknown, collecting data |
+| FRIENDLY | Green | Matched enrolled person |
+| ENEMY | Red | Unknown person (timeout) |
 
 ## Configuration
 
@@ -71,43 +104,45 @@ Key settings in `config.yaml`:
 
 ```yaml
 thresholds:
-  t_accept: 0.65      # Min similarity for FRIENDLY
-  t_margin: 0.10      # Min margin between best/second match
-  t_timeout: 5.0      # Seconds before ENEMY classification
+  t_accept: 0.78       # Min score for FRIENDLY
+  t_margin: 0.20       # Min margin between candidates
+  t_timeout: 15.0      # Seconds before ENEMY
 
 fusion:
-  embedding_sample_interval: 3  # Process every Nth frame (save compute)
+  embedding_window: 20      # Embeddings to collect
+  embedding_min: 6          # Min before matching
+  consistency_count: 12     # Consistent frames needed
+
+models:
+  face_embedder: models/mobilefacenet.onnx
 ```
 
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `auto_enroll.py` | Smart enrollment with confidence testing |
-| `capture_and_enroll.py` | Manual photo capture + enrollment |
-| `enroll.py` | Build index from existing photos |
-| `run_runtime.py` | Main recognition pipeline |
-| `check_photos.py` | Verify enrollment photo quality |
-
-## Performance Tips
-
-- Use `embedding_sample_interval: 3-5` for low-power devices
-- Lower resolution in `config.yaml` if needed
-- Use `mobilefacenet.onnx` (faster) vs `arcface_r100.onnx` (more accurate)
+| `run_runtime.py` | Main application |
+| `auto_enroll.py` | Capture & enroll faces |
+| `enroll.py` | Enroll from photos |
+| `calibrate_thresholds.py` | Find optimal thresholds |
+| `evaluate_model.py` | Test model quality |
+| `check_photos.py` | Verify enrollment photos |
 
 ## Troubleshooting
 
-**Wrong person detected:**
-- Re-enroll with more varied photos (angles, lighting, expressions)
-- Use `python tools/check_photos.py --data-dir friendly` to verify quality
+**Low recognition accuracy?**
+- Run `python tools/calibrate_thresholds.py --test-all-models`
+- Ensure good lighting during enrollment
+- Capture varied poses/expressions
 
-**Low FPS:**
+**False positives?**
+- Increase `t_accept` threshold
+- Increase `t_margin` for better separation
+- Check embedding variance with `evaluate_model.py`
+
+**Slow recognition?**
+- Reduce `embedding_min` (faster but less accurate)
 - Increase `embedding_sample_interval`
-- Reduce camera resolution
-
-**Face not detected when tilted:**
-- System auto-tries rotated detection
-- Ensure good lighting
 
 ## License
 

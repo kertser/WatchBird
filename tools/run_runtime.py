@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Dict, Optional
 
+import cv2
 import numpy as np
 
 from watchbird.camera.usb_backend import USBCameraBackend
@@ -178,14 +179,20 @@ class RecognitionPipeline:
         # Embedding aggregation manager
         # This collects multiple embeddings per track and compares the centroid
         # against the database for more robust recognition
-        embedding_window = self.config.fusion.get("embedding_window", 10)
-        embedding_min = self.config.fusion.get("embedding_min", 5)
+        embedding_window = self.config.fusion.get("embedding_window", 20)
+        embedding_min = self.config.fusion.get("embedding_min", 6)
+        embedding_quality = self.config.fusion.get("embedding_quality_threshold", 0.4)
+        embedding_outlier = self.config.fusion.get("embedding_outlier_threshold", 0.25)
         self.embedding_manager = TrackEmbeddingManager(
             window_size=embedding_window,
             min_embeddings=embedding_min,
-            quality_threshold=self.config.quality.get("min_face_quality", 0.3)
+            quality_threshold=embedding_quality,
+            outlier_threshold=embedding_outlier
         )
-        logger.info(f"Embedding aggregation: window={embedding_window}, min={embedding_min}")
+        logger.info(
+            f"Embedding aggregation: window={embedding_window}, min={embedding_min}, "
+            f"quality_thresh={embedding_quality}, outlier_thresh={embedding_outlier}"
+        )
 
         # Fusion
         self.fusion = SimilarityFusion()
@@ -259,7 +266,7 @@ class RecognitionPipeline:
             face_roi = extract_roi(frame, track.bbox)
 
             # Compute face quality
-            quality, _ = compute_face_quality(
+            quality, quality_details = compute_face_quality(
                 track.bbox,
                 face_roi,
                 track.confidence,
@@ -276,8 +283,29 @@ class RecognitionPipeline:
             if embedding is None:
                 continue
 
-            # Add embedding to aggregator for this track
-            self.embedding_manager.add_embedding(track_id, embedding, quality)
+            # Compute additional quality metrics for embedding aggregation
+            # Blur score: use Laplacian variance (higher = sharper)
+            gray_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY) if len(face_roi.shape) == 3 else face_roi
+            blur_var = cv2.Laplacian(gray_roi, cv2.CV_64F).var()
+            # Normalize blur: 100+ is good, <50 is blurry
+            blur_score = min(1.0, blur_var / 100.0)
+
+            # Brightness: compute mean pixel value
+            brightness = np.mean(gray_roi) / 255.0  # 0-1, optimal around 0.5
+
+            # Face size: area of bounding box
+            bbox = track.bbox
+            face_size = int((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) ** 0.5)  # sqrt of area
+
+            # Add embedding to aggregator for this track with quality metrics
+            self.embedding_manager.add_embedding(
+                track_id,
+                embedding,
+                quality=quality,
+                blur_score=blur_score,
+                brightness=brightness,
+                face_size=face_size
+            )
 
             # Check if we have enough embeddings for reliable matching
             if not self.embedding_manager.is_ready(track_id):
