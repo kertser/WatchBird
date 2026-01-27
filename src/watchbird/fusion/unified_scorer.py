@@ -244,7 +244,7 @@ class UnifiedScorer:
 
         best_plda_id, best_plda_score = sorted_persons[0]
         second_score = sorted_persons[1][1] if len(sorted_persons) > 1 else 0.0
-        margin = best_plda_score - second_score
+        plda_margin = best_plda_score - second_score
 
         # Get raw LLR for threshold check
         best_llr = plda_scores[best_plda_id]
@@ -276,8 +276,43 @@ class UnifiedScorer:
                 )
                 return self._score_faiss_only(faiss_candidates)
 
-        # PLDA and FAISS agree - use PLDA score (provides better calibration)
-        return best_plda_id, best_plda_score, margin, all_scores
+        # PLDA and FAISS agree - blend PLDA confidence with FAISS score
+        # This prevents PLDA from being overconfident when FAISS similarity is low
+        #
+        # Strategy: Use weighted average of PLDA calibrated score and FAISS score
+        # - High FAISS score (>0.75): trust PLDA more (70% PLDA, 30% FAISS)
+        # - Medium FAISS score (0.6-0.75): balanced (50% PLDA, 50% FAISS)
+        # - Low FAISS score (<0.6): trust FAISS more (30% PLDA, 70% FAISS)
+
+        if best_faiss_score >= 0.75:
+            plda_weight = 0.7
+        elif best_faiss_score >= 0.6:
+            plda_weight = 0.5
+        else:
+            plda_weight = 0.3
+
+        faiss_weight = 1.0 - plda_weight
+
+        # Blend the scores
+        blended_score = plda_weight * best_plda_score + faiss_weight * best_faiss_score
+
+        # Also compute blended margin
+        faiss_margin = best_faiss_score - (faiss_sorted[1][1] if len(faiss_sorted) > 1 else 0.0)
+        blended_margin = plda_weight * plda_margin + faiss_weight * faiss_margin
+
+        # Update all_scores with blended values
+        blended_all_scores = {}
+        for person_id in all_scores:
+            faiss_val = faiss_scores.get(person_id, 0.0)
+            plda_val = all_scores[person_id]
+            blended_all_scores[person_id] = plda_weight * plda_val + faiss_weight * faiss_val
+
+        logger.debug(
+            f"PLDA+FAISS blend: FAISS={best_faiss_score:.3f}, PLDA={best_plda_score:.3f}, "
+            f"blended={blended_score:.3f} (weights: PLDA={plda_weight:.1f}, FAISS={faiss_weight:.1f})"
+        )
+
+        return best_plda_id, blended_score, blended_margin, blended_all_scores
 
 
     def get_scoring_info(self) -> Dict[str, any]:

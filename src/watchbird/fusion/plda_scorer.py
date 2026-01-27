@@ -461,6 +461,12 @@ class PLDAScorer:
         min_out, max_out = target_range
         calibrated = min_out + (max_out - min_out) * sigmoid
 
+        # Cap maximum confidence at 0.98 to avoid unrealistic certainty
+        # This prevents overfitting artifacts from producing perfect 1.0 scores
+        # Real-world face recognition should never claim 100% certainty
+        max_confidence = 0.98
+        calibrated = min(calibrated, max_confidence)
+
         return float(calibrated)
 
     def save(self, path: str) -> bool:

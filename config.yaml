@@ -1,69 +1,53 @@
-# Bioguard Configuration File
-
 camera:
-  # backend: picamera2  # or video_file, usb
   backend: usb
-  resolution: [640, 480]
+  resolution:
+  - 640
+  - 480
   fps: 30
-  video_path: null  # for video_file backend
-
+  video_path: null
 detection:
   face_conf_threshold: 0.7
-
 tracking:
-  max_age: 30  # frames
-  min_hits: 3 # frames
-  iou_threshold: 0.3 # Intersection over Union threshold
-
+  max_age: 30
+  min_hits: 3
+  iou_threshold: 0.3
 quality:
-  min_face_quality: 0.3    # Runtime: filter low-quality faces
-  min_enroll_quality: 0.8  # Enrollment: stricter quality for enrolled photos
-  min_bbox_size: 40  # pixels (minimum face bounding box size)
-  blur_threshold: 100.0  # Laplacian variance = blur measure (threshold lowered for faster recognition)
-
+  min_face_quality: 0.3
+  min_enroll_quality: 0.8
+  min_bbox_size: 40
+  blur_threshold: 100.0
 fusion:
-  window_size: 15  # M frames (
-  consistency_count: 5  # N frames
-  embedding_sample_interval: 5  # Extract embeddings every N frames (3 = ~6.7 fps at 20fps camera)
-  confidence_decay_threshold: 10  # Number of inconsistent frames before dropping FRIENDLY status (increased for stability)
-
+  window_size: 30
+  consistency_count: 15
+  embedding_sample_interval: 3
+  confidence_decay_threshold: 25
+  embedding_window: 15
+  embedding_min: 8
 thresholds:
-  t_accept: 0.81  # Minimum score for FRIENDLY (for higher precision)
-  t_margin: 0.03  # Minimum margin between top two scores to accept FRIENDLY
-  t_timeout: 10.0  # seconds (increased from 8.0 to give more time)
-  identity_switch_margin: 0.15  # Extra margin required to switch to a different person
-
+  t_accept: 0.78
+  t_margin: 0.20
+  t_timeout: 15.0
+  identity_switch_margin: 0.25
 index:
   face_index_path: data/index/face.index
   meta_path: data/index/meta.jsonl
-
-# PLDA (Probabilistic Linear Discriminant Analysis) - Optional second-stage scorer
-# Provides better open-set rejection on top of FAISS cosine similarity
-# NOTE: Currently disabled - PLDA needs more training data for reliable results
 plda:
   enabled: true
-  model_path: data/index/plda.npz  # Path to trained PLDA model
-  faiss_k: 5  # Number of candidates to retrieve from FAISS for PLDA scoring
-  llr_threshold: 1  # Minimum log-likelihood ratio for acceptance (increased for stricter rejection)
-  margin_threshold: 0.5  # Minimum LLR margin between top two candidates
-  calibrate: true  # Calibrate PLDA scores to [0, 1] range
-
+  model_path: data/index/plda.npz
+  faiss_k: 5
+  llr_threshold: 2.5
+  margin_threshold: 0.5
+  calibrate: true
 models:
   face_detector: models/yunet.onnx
-  #face_embedder: models/mobilefacenet.onnx
-  face_embedder: models/arcface_r100.onnx
-  #face_embedder: models/adaface_r100.onnx
-  #face_embedder: models/sface.onnx  # SFace: Sigmoid-Constrained Hypersphere Loss
-
+  face_embedder: models/mobilefacenet.onnx
 stream:
   enabled: true
   host: 0.0.0.0
   port: 8080
-
 inference:
-  use_gpu: true  # Enable GPU acceleration if available (CUDA/DirectML)
-  gpu_device_id: 0  # GPU device ID to use
-
+  use_gpu: true
+  gpu_device_id: 0
 logging:
   level: INFO
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'

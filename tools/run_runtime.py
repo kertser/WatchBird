@@ -4,7 +4,6 @@
 import argparse
 import logging
 import time
-from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
@@ -18,6 +17,7 @@ except ImportError:
 from watchbird.config import Config
 from watchbird.detect.face_detector import FaceDetector
 from watchbird.embed.face_embedder import FaceEmbedder
+from watchbird.fusion.embedding_aggregator import TrackEmbeddingManager
 from watchbird.fusion.similarity import SimilarityFusion
 from watchbird.fusion.unified_scorer import create_scorer_from_config
 from watchbird.index.faiss_wrapper import FaissIndex
@@ -58,6 +58,7 @@ class RecognitionPipeline:
         self.fusion = None
         self.event_emitter = None
         self.mjpeg_server = None
+        self.embedding_manager = None  # New: embedding aggregation
 
         # Track state machines
         self.track_states: Dict[int, TrackStateMachine] = {}
@@ -165,11 +166,26 @@ class RecognitionPipeline:
             )
 
         # Tracker
+        # Note: enable_reid=False because with low separation margin between identities,
+        # re-identification tends to propagate wrong identity assignments
         self.tracker = Tracker(
             max_age=self.config.tracking["max_age"],
             min_hits=self.config.tracking["min_hits"],
-            iou_threshold=self.config.tracking["iou_threshold"]
+            iou_threshold=self.config.tracking["iou_threshold"],
+            enable_reid=False
         )
+
+        # Embedding aggregation manager
+        # This collects multiple embeddings per track and compares the centroid
+        # against the database for more robust recognition
+        embedding_window = self.config.fusion.get("embedding_window", 10)
+        embedding_min = self.config.fusion.get("embedding_min", 5)
+        self.embedding_manager = TrackEmbeddingManager(
+            window_size=embedding_window,
+            min_embeddings=embedding_min,
+            quality_threshold=self.config.quality.get("min_face_quality", 0.3)
+        )
+        logger.info(f"Embedding aggregation: window={embedding_window}, min={embedding_min}")
 
         # Fusion
         self.fusion = SimilarityFusion()
@@ -260,8 +276,36 @@ class RecognitionPipeline:
             if embedding is None:
                 continue
 
-            # Score using unified scorer (FAISS + optional PLDA)
-            best_person_id, best_score, margin, all_scores = self.unified_scorer.score(embedding)
+            # Add embedding to aggregator for this track
+            self.embedding_manager.add_embedding(track_id, embedding, quality)
+
+            # Check if we have enough embeddings for reliable matching
+            if not self.embedding_manager.is_ready(track_id):
+                # Not enough embeddings yet, skip scoring this frame
+                emb_count = self.embedding_manager.get_embedding_count(track_id)
+                logger.debug(
+                    f"Track {track_id}: collecting embeddings ({emb_count}/"
+                    f"{self.config.fusion.get('embedding_min', 5)})"
+                )
+                continue
+
+            # Get centroid embedding for this track
+            centroid_embedding = self.embedding_manager.get_centroid(track_id)
+
+            if centroid_embedding is None:
+                continue
+
+            # Check embedding variance - high variance indicates unstable/confused track
+            variance = self.embedding_manager.get_variance(track_id)
+            if variance > 0.15:  # High variance threshold
+                logger.debug(
+                    f"Track {track_id}: high embedding variance ({variance:.3f}), "
+                    f"recognition may be unreliable"
+                )
+
+            # Score using unified scorer with AGGREGATED centroid embedding
+            # This is more robust than scoring individual frames
+            best_person_id, best_score, margin, all_scores = self.unified_scorer.score(centroid_embedding)
 
             if best_person_id is None:
                 continue
@@ -316,6 +360,9 @@ class RecognitionPipeline:
                 del self.track_frame_counters[track_id]
             if track_id in self.track_states:
                 del self.track_states[track_id]
+
+        # Also cleanup embedding manager
+        self.embedding_manager.cleanup_stale_tracks(active_track_ids)
 
         # Draw annotations
         annotated_frame = frame.copy()
