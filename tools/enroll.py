@@ -12,6 +12,7 @@ import numpy as np
 from watchbird.config import Config
 from watchbird.detect.face_detector import FaceDetector
 from watchbird.embed.face_embedder import FaceEmbedder
+from watchbird.fusion.plda_scorer import PLDAScorer
 from watchbird.index.faiss_wrapper import FaissIndex
 from watchbird.index.meta_store import MetaStore
 from watchbird.utils.image_ops import extract_roi
@@ -174,6 +175,11 @@ def main() -> None:
         default=None,
         help="Minimum face quality threshold (default: from config)"
     )
+    parser.add_argument(
+        "--train-plda",
+        action="store_true",
+        help="Train PLDA model for second-stage scoring (requires 2+ identities)"
+    )
 
     args = parser.parse_args()
 
@@ -253,6 +259,40 @@ def main() -> None:
     else:
         logger.error("Failed to save metadata")
         return
+
+    # Train PLDA model if requested
+    if args.train_plda:
+        logger.info("Training PLDA model...")
+
+        # Build labels list from metadata
+        labels = [meta_store.get_person_id(i) for i in range(len(embeddings))]
+
+        # Check if we have enough identities for PLDA
+        unique_identities = set(labels)
+        if len(unique_identities) < 2:
+            logger.warning(
+                f"PLDA requires at least 2 identities, found {len(unique_identities)}. "
+                "Skipping PLDA training."
+            )
+        else:
+            plda_scorer = PLDAScorer(
+                embedding_dim=embeddings.shape[1],
+                plda_dim=min(128, embeddings.shape[1] // 2),
+                regularization=1e-5
+            )
+
+            if plda_scorer.train(embeddings, labels):
+                plda_path = config.get('plda.model_path', 'data/index/plda.npz')
+                if plda_scorer.save(plda_path):
+                    logger.info(f"Saved PLDA model to {plda_path}")
+                    logger.info(
+                        f"PLDA model: {len(unique_identities)} identities, "
+                        f"{len(embeddings)} total samples"
+                    )
+                else:
+                    logger.error("Failed to save PLDA model")
+            else:
+                logger.error("PLDA training failed")
 
     logger.info("Enrollment complete!")
 

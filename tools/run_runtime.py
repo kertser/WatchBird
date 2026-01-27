@@ -4,9 +4,9 @@
 import argparse
 import logging
 import time
-from pathlib import Path
 from typing import Dict, Optional
 
+import cv2
 import numpy as np
 
 from watchbird.camera.usb_backend import USBCameraBackend
@@ -18,7 +18,9 @@ except ImportError:
 from watchbird.config import Config
 from watchbird.detect.face_detector import FaceDetector
 from watchbird.embed.face_embedder import FaceEmbedder
+from watchbird.fusion.embedding_aggregator import TrackEmbeddingManager
 from watchbird.fusion.similarity import SimilarityFusion
+from watchbird.fusion.unified_scorer import create_scorer_from_config
 from watchbird.index.faiss_wrapper import FaissIndex
 from watchbird.index.meta_store import MetaStore
 from watchbird.runtime.events import EventEmitter
@@ -52,10 +54,12 @@ class RecognitionPipeline:
         self.face_embedder = None
         self.faiss_index = None
         self.meta_store = None
+        self.unified_scorer = None  # New: unified FAISS + PLDA scorer
         self.tracker = None
         self.fusion = None
         self.event_emitter = None
         self.mjpeg_server = None
+        self.embedding_manager = None  # New: embedding aggregation
 
         # Track state machines
         self.track_states: Dict[int, TrackStateMachine] = {}
@@ -147,11 +151,47 @@ class RecognitionPipeline:
             logger.error("Failed to load metadata")
             return False
 
+        # Unified scorer (FAISS + optional PLDA)
+        self.unified_scorer = create_scorer_from_config(
+            faiss_index=self.faiss_index,
+            meta_store=self.meta_store,
+            config=self.config
+        )
+
+        scoring_info = self.unified_scorer.get_scoring_info()
+        logger.info(f"Scoring backend: {scoring_info['backend']}")
+        if scoring_info['plda_available']:
+            logger.info(
+                f"PLDA enabled: {scoring_info['plda_identities']} identities, "
+                f"LLR threshold={scoring_info['plda_llr_threshold']:.2f}"
+            )
+
         # Tracker
+        # Note: enable_reid=False because with low separation margin between identities,
+        # re-identification tends to propagate wrong identity assignments
         self.tracker = Tracker(
             max_age=self.config.tracking["max_age"],
             min_hits=self.config.tracking["min_hits"],
-            iou_threshold=self.config.tracking["iou_threshold"]
+            iou_threshold=self.config.tracking["iou_threshold"],
+            enable_reid=False
+        )
+
+        # Embedding aggregation manager
+        # This collects multiple embeddings per track and compares the centroid
+        # against the database for more robust recognition
+        embedding_window = self.config.fusion.get("embedding_window", 20)
+        embedding_min = self.config.fusion.get("embedding_min", 6)
+        embedding_quality = self.config.fusion.get("embedding_quality_threshold", 0.4)
+        embedding_outlier = self.config.fusion.get("embedding_outlier_threshold", 0.25)
+        self.embedding_manager = TrackEmbeddingManager(
+            window_size=embedding_window,
+            min_embeddings=embedding_min,
+            quality_threshold=embedding_quality,
+            outlier_threshold=embedding_outlier
+        )
+        logger.info(
+            f"Embedding aggregation: window={embedding_window}, min={embedding_min}, "
+            f"quality_thresh={embedding_quality}, outlier_thresh={embedding_outlier}"
         )
 
         # Fusion
@@ -226,7 +266,7 @@ class RecognitionPipeline:
             face_roi = extract_roi(frame, track.bbox)
 
             # Compute face quality
-            quality, _ = compute_face_quality(
+            quality, quality_details = compute_face_quality(
                 track.bbox,
                 face_roi,
                 track.confidence,
@@ -243,23 +283,61 @@ class RecognitionPipeline:
             if embedding is None:
                 continue
 
-            # Search FAISS index
-            similarities, indices = self.faiss_index.search(embedding, k=2)
+            # Compute additional quality metrics for embedding aggregation
+            # Blur score: use Laplacian variance (higher = sharper)
+            gray_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY) if len(face_roi.shape) == 3 else face_roi
+            blur_var = cv2.Laplacian(gray_roi, cv2.CV_64F).var()
+            # Normalize blur: 100+ is good, <50 is blurry
+            blur_score = min(1.0, blur_var / 100.0)
 
-            if len(similarities) == 0:
+            # Brightness: compute mean pixel value
+            brightness = np.mean(gray_roi) / 255.0  # 0-1, optimal around 0.5
+
+            # Face size: area of bounding box
+            bbox = track.bbox
+            face_size = int((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) ** 0.5)  # sqrt of area
+
+            # Add embedding to aggregator for this track with quality metrics
+            self.embedding_manager.add_embedding(
+                track_id,
+                embedding,
+                quality=quality,
+                blur_score=blur_score,
+                brightness=brightness,
+                face_size=face_size
+            )
+
+            # Check if we have enough embeddings for reliable matching
+            if not self.embedding_manager.is_ready(track_id):
+                # Not enough embeddings yet, skip scoring this frame
+                emb_count = self.embedding_manager.get_embedding_count(track_id)
+                logger.debug(
+                    f"Track {track_id}: collecting embeddings ({emb_count}/"
+                    f"{self.config.fusion.get('embedding_min', 5)})"
+                )
                 continue
 
-            # Get person IDs from metadata
-            person_ids = [
-                self.meta_store.get_person_id(int(idx))
-                for idx in indices[0]
-            ]
+            # Get centroid embedding for this track
+            centroid_embedding = self.embedding_manager.get_centroid(track_id)
 
-            # Get top matches
-            matches = list(zip(similarities[0], person_ids))
+            if centroid_embedding is None:
+                continue
 
-            # Aggregate best candidate
-            best_person_id, best_score, margin = self.fusion.aggregate_top_candidate(matches)
+            # Check embedding variance - high variance indicates unstable/confused track
+            variance = self.embedding_manager.get_variance(track_id)
+            if variance > 0.15:  # High variance threshold
+                logger.debug(
+                    f"Track {track_id}: high embedding variance ({variance:.3f}), "
+                    f"recognition may be unreliable"
+                )
+
+            # Score using unified scorer with AGGREGATED centroid embedding
+            # This is more robust than scoring individual frames
+            best_person_id, best_score, margin, all_scores = self.unified_scorer.score(centroid_embedding)
+
+            if best_person_id is None:
+                continue
+
             second_score = best_score - margin
 
             # Check for track re-identification (same person from lost track)
@@ -310,6 +388,9 @@ class RecognitionPipeline:
                 del self.track_frame_counters[track_id]
             if track_id in self.track_states:
                 del self.track_states[track_id]
+
+        # Also cleanup embedding manager
+        self.embedding_manager.cleanup_stale_tracks(active_track_ids)
 
         # Draw annotations
         annotated_frame = frame.copy()

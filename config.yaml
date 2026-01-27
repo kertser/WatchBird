@@ -1,57 +1,180 @@
-# Bioguard Configuration File
+# =============================================================================
+# WatchBird Configuration
+# =============================================================================
+# Real-time face recognition system configuration.
+# See docs/Configuration.md for detailed explanations.
+# =============================================================================
 
+# -----------------------------------------------------------------------------
+# Camera Settings
+# -----------------------------------------------------------------------------
 camera:
-  # backend: picamera2  # or video_file, usb
-  backend: usb
-  resolution: [640, 480]
-  fps: 30
-  video_path: null  # for video_file backend
+  backend: usb                    # Options: usb | picamera2 | video_file
+  resolution: [640, 480]          # [width, height] in pixels
+  fps: 30                         # Target frame rate
+  video_path: null                # Path for video_file backend (optional)
+  # device_id: 0                  # Camera device index (default: 0)
 
+# -----------------------------------------------------------------------------
+# Face Detection
+# -----------------------------------------------------------------------------
 detection:
-  face_conf_threshold: 0.7
+  face_conf_threshold: 0.7        # Min detection confidence (0.0-1.0)
+  # nms_threshold: 0.3            # Non-max suppression threshold
 
+# -----------------------------------------------------------------------------
+# Object Tracking (SORT-based)
+# -----------------------------------------------------------------------------
 tracking:
-  max_age: 30  # frames
-  min_hits: 3 # frames
-  iou_threshold: 0.3 # Intersection over Union threshold
+  max_age: 30                     # Frames before track is deleted
+  min_hits: 3                     # Min detections to confirm track
+  iou_threshold: 0.3              # IoU threshold for matching
+  # enable_reid: false            # Re-identification (disabled by default)
 
+# -----------------------------------------------------------------------------
+# Quality Filtering
+# -----------------------------------------------------------------------------
+# Embeddings from low-quality frames are rejected to improve accuracy.
 quality:
-  min_face_quality: 0.3    # Runtime: filter low-quality faces
-  min_enroll_quality: 0.8  # Enrollment: stricter quality for enrolled photos
-  min_bbox_size: 40  # pixels (minimum face bounding box size)
-  blur_threshold: 100.0  # Laplacian variance = blur measure (threshold lowered for faster recognition)
+  min_face_quality: 0.3           # Min quality for processing
+  min_enroll_quality: 0.8         # Min quality for enrollment photos
+  min_bbox_size: 40               # Min face bounding box size (pixels)
+  blur_threshold: 100.0           # Laplacian variance threshold for blur
 
+# -----------------------------------------------------------------------------
+# Embedding Aggregation
+# -----------------------------------------------------------------------------
+# Instead of matching single frames (noisy), we aggregate multiple embeddings
+# and compute a quality-weighted centroid for robust matching.
+#
+# Flow: Frame → Embedding → Quality Check → Outlier Check → Buffer → Centroid
+#
 fusion:
-  window_size: 15  # M frames (
-  consistency_count: 5  # N frames
-  embedding_sample_interval: 5  # Extract embeddings every N frames (3 = ~6.7 fps at 20fps camera)
-  confidence_decay_threshold: 10  # Number of inconsistent frames before dropping FRIENDLY status (increased for stability)
+  # Temporal aggregation
+  window_size: 30                 # Observation window for state machine
+  consistency_count: 12           # Consistent frames needed for decision
+  confidence_decay_threshold: 25  # Frames before confidence starts to decay
 
+  # Embedding aggregation (key for accuracy)
+  embedding_window: 20            # Max embeddings per track
+  embedding_min: 6                # Min embeddings before matching
+  embedding_sample_interval: 2    # Sample every N frames (1=every frame)
+  embedding_quality_threshold: 0.4     # Min combined quality score
+  embedding_outlier_threshold: 0.25    # Max distance from centroid for inliers
+
+  # Quality score formula:
+  # combined = 0.40 × detection_conf
+  #          + 0.25 × blur_score (higher = sharper)
+  #          + 0.15 × brightness_score (optimal = 0.5)
+  #          + 0.20 × size_score (larger = better)
+
+# -----------------------------------------------------------------------------
+# Decision Thresholds
+# -----------------------------------------------------------------------------
+# These control when a track transitions from SUSPECT to FRIENDLY.
+#
+#   SUSPECT ──[score ≥ t_accept]──▶ FRIENDLY
+#      │      [margin ≥ t_margin]
+#      │      [consistency ≥ count]
+#      │
+#      └──[timeout]──▶ ENEMY
+#
 thresholds:
-  t_accept: 0.81  # Minimum score for FRIENDLY (for higher precision)
-  t_margin: 0.03  # Minimum margin between top two scores to accept FRIENDLY
-  t_timeout: 10.0  # seconds (increased from 8.0 to give more time)
-  identity_switch_margin: 0.15  # Extra margin required to switch to a different person
+  t_accept: 0.78                  # Min score for FRIENDLY (0.0-1.0)
+  t_margin: 0.20                  # Min margin between best and 2nd best
+  t_timeout: 15.0                 # Seconds in SUSPECT before ENEMY
+  identity_switch_margin: 0.25    # Extra margin required to switch identity
 
+# -----------------------------------------------------------------------------
+# Face Index (Database)
+# -----------------------------------------------------------------------------
 index:
-  face_index_path: data/index/face.index
-  meta_path: data/index/meta.jsonl
+  face_index_path: data/index/face.index    # FAISS index file
+  meta_path: data/index/meta.jsonl          # Metadata (person IDs)
 
+# -----------------------------------------------------------------------------
+# PLDA Scoring (Second Stage)
+# -----------------------------------------------------------------------------
+# PLDA provides probabilistic scoring on top of FAISS for better accuracy.
+# Enabled by default. Falls back to FAISS-only if model not found.
+#
+plda:
+  enabled: true                   # Use PLDA second stage scoring
+  model_path: data/index/plda.npz # PLDA model file
+  faiss_k: 5                      # Top-K candidates from FAISS
+  llr_threshold: 2.5              # Min log-likelihood ratio
+  margin_threshold: 0.5           # Min PLDA margin
+  calibrate: true                 # Map LLR to 0-1 range
+
+  # Score blending (PLDA + FAISS):
+  # - High FAISS (≥0.75): 70% PLDA + 30% FAISS
+  # - Med FAISS (0.6-0.75): 50% PLDA + 50% FAISS
+  # - Low FAISS (<0.6): 30% PLDA + 70% FAISS
+
+# -----------------------------------------------------------------------------
+# Models
+# -----------------------------------------------------------------------------
+# Available face embedders:
+#   - mobilefacenet.onnx  (4MB, fast, good accuracy) ← Recommended
+#   - arcface_r100.onnx   (249MB, slow, best accuracy)
+#   - adaface_r100.onnx   (249MB, slow, best accuracy)
+#
 models:
   face_detector: models/yunet.onnx
-  #face_embedder: models/mobilefacenet.onnx
-  face_embedder: models/arcface_r100.onnx
-  #face_embedder: models/adaface_r100.onnx
+  face_embedder: models/mobilefacenet.onnx
 
+# -----------------------------------------------------------------------------
+# MJPEG Streaming
+# -----------------------------------------------------------------------------
+# View live stream at: http://<host>:<port>/stream
+#
 stream:
-  enabled: true
-  host: 0.0.0.0
-  port: 8080
+  enabled: true                   # Enable MJPEG server
+  host: 0.0.0.0                   # Bind address (0.0.0.0 = all interfaces)
+  port: 8080                      # HTTP port
 
+# -----------------------------------------------------------------------------
+# Inference (GPU Acceleration)
+# -----------------------------------------------------------------------------
+# GPU support:
+#   - NVIDIA: pip install onnxruntime-gpu
+#   - AMD/Intel (Windows): pip install onnxruntime-directml
+#
 inference:
-  use_gpu: true  # Enable GPU acceleration if available (CUDA/DirectML)
-  gpu_device_id: 0  # GPU device ID to use
+  use_gpu: true                   # Use GPU if available
+  gpu_device_id: 0                # GPU device index
 
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
 logging:
-  level: INFO
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  level: INFO                     # DEBUG | INFO | WARNING | ERROR
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+
+# =============================================================================
+# Tuning Presets
+# =============================================================================
+#
+# FOR ACCURACY (fewer false positives):
+#   thresholds:
+#     t_accept: 0.85
+#     t_margin: 0.25
+#   fusion:
+#     embedding_min: 10
+#     consistency_count: 15
+#
+# FOR SPEED (faster recognition):
+#   thresholds:
+#     t_accept: 0.70
+#     t_margin: 0.15
+#   fusion:
+#     embedding_min: 4
+#     embedding_sample_interval: 3
+#
+# FOR ROBUSTNESS (varying conditions):
+#   fusion:
+#     embedding_window: 30
+#     embedding_outlier_threshold: 0.30
+#     embedding_quality_threshold: 0.35
+#
+# =============================================================================

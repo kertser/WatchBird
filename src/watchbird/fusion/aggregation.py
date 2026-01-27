@@ -98,6 +98,41 @@ class TemporalAggregator:
         scores = scores_by_person[best_person_id]
         margins = margins_by_person[best_person_id]
 
+        # If there are multiple candidates with similar counts, be more conservative
+        # This catches the case where both mike and ira are in buffer with similar counts
+        if len(person_counts) > 1:
+            counts_sorted = sorted(person_counts.values(), reverse=True)
+            second_count = counts_sorted[1] if len(counts_sorted) > 1 else 0
+            count_margin = consistency - second_count
+
+            # Calculate the dominance ratio - how much does the winner dominate?
+            total_detections = sum(person_counts.values())
+            dominance_ratio = consistency / total_detections if total_detections > 0 else 0
+
+            # Require the winner to have at least 70% of all detections
+            # AND have a clear count margin over second place
+            if dominance_ratio < 0.70 or count_margin < 3:
+                # Not a clear winner - reduce consistency to force more observation
+                effective_consistency = max(0, count_margin - 2)
+                logger.debug(
+                    f"Aggregator: Multiple candidates close - "
+                    f"best={best_person_id}({consistency}/{total_detections}={dominance_ratio:.0%}), "
+                    f"second={second_count}, count_margin={count_margin}, "
+                    f"effective_consistency={effective_consistency}"
+                )
+                consistency = effective_consistency
+
+            # Also check the median margin between scores
+            # If the score margin is low, the model can't distinguish well
+            median_margin = float(np.median(margins))
+            if median_margin < 0.10:
+                # Very low margin - penalize consistency further
+                consistency = max(0, consistency - 3)
+                logger.debug(
+                    f"Aggregator: Low score margin ({median_margin:.3f}) - "
+                    f"reducing consistency to {consistency}"
+                )
+
         metrics = {
             "median_score": float(np.median(scores)),
             "median_margin": float(np.median(margins)),
