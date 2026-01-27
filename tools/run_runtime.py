@@ -19,6 +19,7 @@ from watchbird.config import Config
 from watchbird.detect.face_detector import FaceDetector
 from watchbird.embed.face_embedder import FaceEmbedder
 from watchbird.fusion.similarity import SimilarityFusion
+from watchbird.fusion.unified_scorer import create_scorer_from_config
 from watchbird.index.faiss_wrapper import FaissIndex
 from watchbird.index.meta_store import MetaStore
 from watchbird.runtime.events import EventEmitter
@@ -52,6 +53,7 @@ class RecognitionPipeline:
         self.face_embedder = None
         self.faiss_index = None
         self.meta_store = None
+        self.unified_scorer = None  # New: unified FAISS + PLDA scorer
         self.tracker = None
         self.fusion = None
         self.event_emitter = None
@@ -146,6 +148,21 @@ class RecognitionPipeline:
         if not self.meta_store.load():
             logger.error("Failed to load metadata")
             return False
+
+        # Unified scorer (FAISS + optional PLDA)
+        self.unified_scorer = create_scorer_from_config(
+            faiss_index=self.faiss_index,
+            meta_store=self.meta_store,
+            config=self.config
+        )
+
+        scoring_info = self.unified_scorer.get_scoring_info()
+        logger.info(f"Scoring backend: {scoring_info['backend']}")
+        if scoring_info['plda_available']:
+            logger.info(
+                f"PLDA enabled: {scoring_info['plda_identities']} identities, "
+                f"LLR threshold={scoring_info['plda_llr_threshold']:.2f}"
+            )
 
         # Tracker
         self.tracker = Tracker(
@@ -243,23 +260,12 @@ class RecognitionPipeline:
             if embedding is None:
                 continue
 
-            # Search FAISS index
-            similarities, indices = self.faiss_index.search(embedding, k=2)
+            # Score using unified scorer (FAISS + optional PLDA)
+            best_person_id, best_score, margin, all_scores = self.unified_scorer.score(embedding)
 
-            if len(similarities) == 0:
+            if best_person_id is None:
                 continue
 
-            # Get person IDs from metadata
-            person_ids = [
-                self.meta_store.get_person_id(int(idx))
-                for idx in indices[0]
-            ]
-
-            # Get top matches
-            matches = list(zip(similarities[0], person_ids))
-
-            # Aggregate best candidate
-            best_person_id, best_score, margin = self.fusion.aggregate_top_candidate(matches)
             second_score = best_score - margin
 
             # Check for track re-identification (same person from lost track)

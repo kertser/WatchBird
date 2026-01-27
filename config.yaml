@@ -37,11 +37,23 @@ index:
   face_index_path: data/index/face.index
   meta_path: data/index/meta.jsonl
 
+# PLDA (Probabilistic Linear Discriminant Analysis) - Optional second-stage scorer
+# Provides better open-set rejection on top of FAISS cosine similarity
+# NOTE: Currently disabled - PLDA needs more training data for reliable results
+plda:
+  enabled: true
+  model_path: data/index/plda.npz  # Path to trained PLDA model
+  faiss_k: 5  # Number of candidates to retrieve from FAISS for PLDA scoring
+  llr_threshold: 1  # Minimum log-likelihood ratio for acceptance (increased for stricter rejection)
+  margin_threshold: 0.5  # Minimum LLR margin between top two candidates
+  calibrate: true  # Calibrate PLDA scores to [0, 1] range
+
 models:
   face_detector: models/yunet.onnx
   #face_embedder: models/mobilefacenet.onnx
   face_embedder: models/arcface_r100.onnx
   #face_embedder: models/adaface_r100.onnx
+  #face_embedder: models/sface.onnx  # SFace: Sigmoid-Constrained Hypersphere Loss
 
 stream:
   enabled: true

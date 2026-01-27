@@ -50,6 +50,14 @@ def main():
             "size": "~4 MB",
             "accuracy": "99.5%",
             "speed": "Fast (~100ms on RPi4)"
+        },
+        "3": {
+            "name": "SFace (Sigmoid-Constrained, Robust)",
+            "url": "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+            "filename": "sface.onnx",
+            "size": "~43 MB",
+            "accuracy": "99.6%",
+            "speed": "Medium (~200ms on RPi4)"
         }
     }
 
@@ -61,7 +69,7 @@ def main():
         print(f"   Size: {model['size']}")
 
     print("\n" + "=" * 70)
-    choice = input("Select model to download (1-2, or 'q' to quit): ").strip()
+    choice = input("Select model to download (1-3, or 'q' to quit): ").strip()
 
     if choice.lower() == 'q':
         print("Cancelled.")
