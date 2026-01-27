@@ -6,7 +6,7 @@ Real-time face recognition for embedded devices.
 ┌─────────────────────────────────────────────────────────────────┐
 │                         WatchBird                               │
 │                                                                 │
-│   Camera → Detect → Track → Recognize → FRIENDLY/ENEMY         │
+│   Camera → Detect → Track → Recognize → FRIENDLY/ENEMY          │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -33,13 +33,13 @@ View stream: `http://localhost:8080/stream`
 
 ```
 ┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────┐
-│  Camera  │───▶│ Detector │───▶│   Tracker     │───▶│ Embedder │
+│  Camera  │───>│ Detector │───>│   Tracker     │───>│ Embedder │
 │  Frame   │    │  YuNet   │    │  SORT-based   │    │ ArcFace  │
 └──────────┘    └──────────┘    └───────────────┘    └────┬─────┘
                                                           │
                                                           ▼
 ┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────┐
-│  Output  │◀───│  State   │◀───│  Aggregator   │◀───│  Scorer  │
+│  Output  │<───│  State   │<───│  Aggregator   │<───│  Scorer  │
 │ FRIENDLY │    │ Machine  │    │  Multi-frame  │    │FAISS+PLDA│
 └──────────┘    └──────────┘    └───────────────┘    └──────────┘
 ```
@@ -59,10 +59,9 @@ Instead of matching each frame individually (noisy), we aggregate multiple embed
 
 ```
 Frame 1 ──▶ Embedding 1 ─┐
-Frame 2 ──▶ Embedding 2 ─┼──▶ Quality-Weighted ──▶ Match vs
+Frame 2 ──▶ Embedding 2 ─┼──> Quality-Weighted ──> Match vs
 Frame 3 ──▶ Embedding 3 ─┤    Centroid            Database
-  ...                    │
-Frame N ──▶ Embedding N ─┘
+...                      │Frame N ──▶ Embedding N ─┘
                          │
                    Outliers filtered
                    Low-quality rejected
@@ -81,7 +80,7 @@ Quality factors:
          │                                 │
          ▼                                 │
     ┌─────────┐   confidence >= 0.78   ┌───┴─────┐
-───▶│ SUSPECT │───────────────────────▶│FRIENDLY │
+───>│ SUSPECT │───────────────────────>│FRIENDLY │
     └────┬────┘   + margin >= 0.20     └─────────┘
          │        + consistency >= 12
          │
@@ -92,11 +91,11 @@ Quality factors:
     └─────────┘
 ```
 
-| State | Color | Meaning |
-|-------|-------|---------|
-| SUSPECT | Yellow | Unknown, collecting data |
-| FRIENDLY | Green | Matched enrolled person |
-| ENEMY | Red | Unknown person (timeout) |
+| State    | Color  | Meaning                  |
+|----------|--------|--------------------------|
+| SUSPECT  | Yellow | Unknown, collecting data |
+| FRIENDLY | Green  | Matched enrolled person  |
+| ENEMY    | Red    | Unknown person (timeout) |
 
 ## Configuration
 
@@ -119,14 +118,14 @@ models:
 
 ## Tools
 
-| Tool | Purpose |
-|------|---------|
-| `run_runtime.py` | Main application |
-| `auto_enroll.py` | Capture & enroll faces |
-| `enroll.py` | Enroll from photos |
-| `calibrate_thresholds.py` | Find optimal thresholds |
-| `evaluate_model.py` | Test model quality |
-| `check_photos.py` | Verify enrollment photos |
+| Tool                      | Purpose                  |
+|---------------------------|--------------------------|
+| `run_runtime.py`          | Main application         |
+| `auto_enroll.py`          | Capture & enroll faces   |
+| `enroll.py`               | Enroll from photos       |
+| `calibrate_thresholds.py` | Find optimal thresholds  |
+| `evaluate_model.py`       | Test model quality       |
+| `check_photos.py`         | Verify enrollment photos |
 
 ## Troubleshooting
 
