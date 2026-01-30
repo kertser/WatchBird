@@ -31,7 +31,9 @@ def check_enrollment_photos(data_dir: Path, config_path: str = "config.yaml"):
         model_path=config.models.get("face_detector"),
         conf_threshold=config.detection["face_conf_threshold"],
         use_gpu=use_gpu,
-        gpu_device_id=gpu_device_id
+        gpu_device_id=gpu_device_id,
+        detection_scale=config.detection.get("detection_scale", 1.0),
+        max_detection_size=config.detection.get("max_detection_size", 640)
     )
     if not face_detector.load():
         print("✗ Failed to load face detector")

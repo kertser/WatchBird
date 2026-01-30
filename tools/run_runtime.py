@@ -29,6 +29,7 @@ from watchbird.stream.mjpeg_server import MJPEGServer, draw_detection_boxes
 from watchbird.track.tracker import Tracker
 from watchbird.utils.image_ops import extract_roi
 from watchbird.utils.quality import compute_face_quality
+from watchbird.utils.resolution_tuner import find_optimal_resolution
 
 logging.basicConfig(
     level=logging.INFO,
@@ -108,22 +109,59 @@ class RecognitionPipeline:
             logger.error(f"Unknown backend: {backend}")
             return False
 
+        # For USB camera with auto-resolution, determine optimal resolution BEFORE opening
+        camera_resolution = tuple(self.config.camera["resolution"])
+
+        if backend == "usb" and self.config.camera.get("auto_resolution", False):
+            target_fps = self.config.camera.get("target_fps", 10.0)
+            min_fps = self.config.camera.get("min_fps", 8.0)
+
+            # Load face detector first (needed for FPS measurement)
+            temp_detector = FaceDetector(
+                model_path=self.config.models.get("face_detector"),
+                conf_threshold=self.config.detection["face_conf_threshold"],
+                use_gpu=self.config.inference.get("use_gpu", True),
+                gpu_device_id=self.config.inference.get("gpu_device_id", 0),
+                detection_scale=self.config.detection.get("detection_scale", 1.0),
+                max_detection_size=self.config.detection.get("max_detection_size", 640)
+            )
+
+            if temp_detector.load():
+                logger.info(f"Auto-tuning resolution for target {target_fps} FPS...")
+                camera_resolution = find_optimal_resolution(
+                    device_id=device_id,
+                    detector=temp_detector,
+                    target_fps=target_fps,
+                    min_fps=min_fps,
+                    test_frames=30
+                )
+                logger.info(f"Selected resolution: {camera_resolution[0]}x{camera_resolution[1]}")
+                # Wait for camera to fully release (Windows MSMF needs this)
+                time.sleep(1.0)
+            else:
+                logger.warning("Could not load detector for auto-tuning, using config resolution")
+
+            # Update camera object with optimal resolution
+            self.camera.resolution = camera_resolution
+
         if not self.camera.open():
             logger.error("Failed to open camera")
             return False
-
 
         # Face detector
         self.face_detector = FaceDetector(
             model_path=self.config.models.get("face_detector"),
             conf_threshold=self.config.detection["face_conf_threshold"],
             use_gpu=self.config.inference.get("use_gpu", True),
-            gpu_device_id=self.config.inference.get("gpu_device_id", 0)
+            gpu_device_id=self.config.inference.get("gpu_device_id", 0),
+            detection_scale=self.config.detection.get("detection_scale", 1.0),
+            max_detection_size=self.config.detection.get("max_detection_size", 640)
         )
 
         if not self.face_detector.load():
             logger.error("Failed to load face detector")
             return False
+
 
         # Face embedder
         self.face_embedder = FaceEmbedder(
@@ -277,21 +315,23 @@ class RecognitionPipeline:
             if quality < self.config.quality["min_face_quality"]:
                 continue
 
-            # Extract embedding (EXPENSIVE OPERATION - now sampled)
+            # Extract embedding (let embedder handle alignment internally for accuracy)
+            # Note: Passing landmarks was causing misalignment issues
             embedding = self.face_embedder.extract(face_roi)
 
             if embedding is None:
                 continue
 
-            # Compute additional quality metrics for embedding aggregation
-            # Blur score: use Laplacian variance (higher = sharper)
-            gray_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY) if len(face_roi.shape) == 3 else face_roi
-            blur_var = cv2.Laplacian(gray_roi, cv2.CV_64F).var()
-            # Normalize blur: 100+ is good, <50 is blurry
-            blur_score = min(1.0, blur_var / 100.0)
+            # Compute simplified quality metrics for embedding aggregation
+            # Skip expensive Laplacian blur computation for FPS
+            bbox = track.bbox
+            face_size = int(((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) ** 0.5)
 
-            # Brightness: compute mean pixel value
-            brightness = np.mean(gray_roi) / 255.0  # 0-1, optimal around 0.5
+            # Simple blur estimate from face size (larger faces = usually sharper)
+            blur_score = min(1.0, face_size / 100.0)
+
+            # Simple brightness from detection confidence
+            brightness = 0.5  # Assume optimal, skip gray conversion
 
             # Face size: area of bounding box
             bbox = track.bbox

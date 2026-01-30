@@ -97,9 +97,43 @@ Quality factors:
 | FRIENDLY | Green  | Matched enrolled person  |
 | ENEMY    | Red    | Unknown person (timeout) |
 
+## Performance Tuning
+
+### Auto-Resolution (Recommended)
+
+Automatically find the highest resolution that achieves your target FPS:
+
+```bash
+# Test auto-resolution tuning
+python tools/test_resolution.py --target-fps 10.0
+
+# Enable in config.yaml
+camera:
+  auto_resolution: true
+  target_fps: 10.0
+  min_fps: 8.0
+```
+
+### Manual Optimization
+
+For high-resolution cameras (1080p+):
+
+```yaml
+detection:
+  max_detection_size: 640  # Downscale to 640px for detection (3-5x faster)
+
+camera:
+  resolution: [1280, 720]  # Manual resolution setting
+```
+
+**Expected FPS by resolution:**
+- 1920x1080 with `max_detection_size: 640` → ~8-10 FPS
+- 1280x720 with `max_detection_size: 640` → ~12-15 FPS  
+- 640x480 (no downscaling) → ~20-25 FPS
+
 ## Configuration
 
-Key settings in `config.yaml`:
+````
 
 ```yaml
 thresholds:

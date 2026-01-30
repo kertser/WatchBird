@@ -198,7 +198,9 @@ def main() -> None:
         model_path=config.models.get("face_detector"),
         conf_threshold=config.detection["face_conf_threshold"],
         use_gpu=config.inference.get("use_gpu", True),
-        gpu_device_id=config.inference.get("gpu_device_id", 0)
+        gpu_device_id=config.inference.get("gpu_device_id", 0),
+        detection_scale=config.detection.get("detection_scale", 1.0),
+        max_detection_size=config.detection.get("max_detection_size", 640)
     )
 
     if not face_detector.load():

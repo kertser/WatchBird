@@ -10,17 +10,32 @@
 # -----------------------------------------------------------------------------
 camera:
   backend: usb                    # Options: usb | picamera2 | video_file
-  resolution: [640, 480]          # [width, height] in pixels
+  resolution: [1024, 768]         # Reduced resolution for better FPS
   fps: 30                         # Target frame rate
   video_path: null                # Path for video_file backend (optional)
   # device_id: 0                  # Camera device index (default: 0)
 
+  # Auto-resolution tuning (USB camera only)
+  # Automatically finds the highest resolution that achieves target FPS
+  # NOTE: Disable this after finding optimal resolution to avoid camera conflicts
+  auto_resolution: true           # Set to true only for initial tuning
+  target_fps: 20.0                # Target FPS for auto-tuning
+  min_fps: 10.0                   # Minimum acceptable FPS
+
 # -----------------------------------------------------------------------------
 # Face Detection
 # -----------------------------------------------------------------------------
+# For high resolution (1080p+), use detection_scale or max_detection_size
+# to run detection on downscaled images (3-5x faster).
+# Bounding boxes are automatically scaled back to full resolution.
+#
 detection:
-  face_conf_threshold: 0.7        # Min detection confidence (0.0-1.0)
+  face_conf_threshold: 0.7        # Min detection confidence
   # nms_threshold: 0.3            # Non-max suppression threshold
+
+  # High-resolution optimization (KEY FOR PERFORMANCE):
+  max_detection_size: 640         # Detection at 640px for good accuracy
+  # detection_scale: 0.5          # Alternative: explicit scale factor
 
 # -----------------------------------------------------------------------------
 # Object Tracking (SORT-based)
@@ -52,15 +67,15 @@ quality:
 fusion:
   # Temporal aggregation
   window_size: 30                 # Observation window for state machine
-  consistency_count: 12           # Consistent frames needed for decision
-  confidence_decay_threshold: 25  # Frames before confidence starts to decay
+  consistency_count: 10           # Consistent frames needed for decision (reduced)
+  confidence_decay_threshold: 40  # Frames before confidence starts to decay (increased)
 
   # Embedding aggregation (key for accuracy)
   embedding_window: 20            # Max embeddings per track
-  embedding_min: 6                # Min embeddings before matching
-  embedding_sample_interval: 2    # Sample every N frames (1=every frame)
-  embedding_quality_threshold: 0.4     # Min combined quality score
-  embedding_outlier_threshold: 0.25    # Max distance from centroid for inliers
+  embedding_min: 4                # Min embeddings before matching (reduced)
+  embedding_sample_interval: 4    # Sample every N frames (increased for FPS)
+  embedding_quality_threshold: 0.30    # Min combined quality score (lowered)
+  embedding_outlier_threshold: 0.30    # Max distance from centroid for inliers (relaxed)
 
   # Quality score formula:
   # combined = 0.40 × detection_conf
@@ -80,10 +95,10 @@ fusion:
 #      └──[timeout]──▶ ENEMY
 #
 thresholds:
-  t_accept: 0.78                  # Min score for FRIENDLY (0.0-1.0)
-  t_margin: 0.20                  # Min margin between best and 2nd best
+  t_accept: 0.65                  # Min score for FRIENDLY (lowered)
+  t_margin: 0.03                  # Min margin between best and 2nd best (very low - identities are close)
   t_timeout: 15.0                 # Seconds in SUSPECT before ENEMY
-  identity_switch_margin: 0.25    # Extra margin required to switch identity
+  identity_switch_margin: 0.10    # Extra margin required to switch identity
 
 # -----------------------------------------------------------------------------
 # Face Index (Database)

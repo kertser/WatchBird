@@ -205,18 +205,22 @@ class FaceEmbedder:
             logger.debug(f"Landmark detection failed: {e}")
             return None
 
-    def _align_face(self, face_roi: np.ndarray, target_size: Tuple[int, int] = (112, 112)) -> np.ndarray:
+    def _align_face(self, face_roi: np.ndarray, target_size: Tuple[int, int] = (112, 112),
+                    landmarks: Optional[np.ndarray] = None) -> np.ndarray:
         """Align face using detected landmarks.
 
         Args:
             face_roi: Cropped face image
             target_size: Output size (width, height)
+            landmarks: Optional pre-computed 5x2 landmarks in ROI coordinates.
+                      If None, will attempt to detect landmarks (slower).
 
         Returns:
             Aligned face image (or resized original if alignment fails)
         """
-        # Try to detect landmarks
-        landmarks = self._detect_landmarks_on_roi(face_roi)
+        # Use pre-computed landmarks if provided, otherwise detect
+        if landmarks is None:
+            landmarks = self._detect_landmarks_on_roi(face_roi)
 
         if landmarks is None:
             # Fallback: just resize without alignment
@@ -247,11 +251,12 @@ class FaceEmbedder:
             logger.debug(f"Face alignment failed: {e}")
             return cv2.resize(face_roi, target_size)
 
-    def _preprocess(self, face_image: np.ndarray) -> np.ndarray:
+    def _preprocess(self, face_image: np.ndarray, landmarks: Optional[np.ndarray] = None) -> np.ndarray:
         """Preprocess face image for model input.
 
         Args:
             face_image: Face ROI in BGR format
+            landmarks: Optional pre-computed 5x2 landmarks in ROI coordinates
 
         Returns:
             Preprocessed image tensor
@@ -264,8 +269,8 @@ class FaceEmbedder:
         else:
             target_h = target_w = 112  # Default for face models
 
-        # Align and resize face (handles rotation correction)
-        aligned = self._align_face(face_image, (target_w, target_h))
+        # Align and resize face (uses pre-computed landmarks if provided)
+        aligned = self._align_face(face_image, (target_w, target_h), landmarks=landmarks)
 
         # Normalize (model-specific, using common values)
         # Convert BGR to RGB and normalize to [-1, 1]
@@ -276,11 +281,13 @@ class FaceEmbedder:
 
         return tensor.astype(np.float32)
 
-    def extract(self, face_image: np.ndarray) -> Optional[np.ndarray]:
+    def extract(self, face_image: np.ndarray, landmarks: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
         """Extract face embedding from image.
 
         Args:
             face_image: Face ROI in BGR format
+            landmarks: Optional pre-computed 5x2 landmarks array. If provided, skips
+                      re-detection (faster). Landmarks should be in ROI coordinates.
 
         Returns:
             L2-normalized embedding vector or None if failed
@@ -291,7 +298,7 @@ class FaceEmbedder:
 
         try:
             # Preprocess (includes alignment)
-            input_tensor = self._preprocess(face_image)
+            input_tensor = self._preprocess(face_image, landmarks=landmarks)
 
             # Run inference
             outputs = self.session.run(None, {self.input_name: input_tensor})
