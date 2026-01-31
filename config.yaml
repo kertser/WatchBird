@@ -10,9 +10,9 @@
 # -----------------------------------------------------------------------------
 camera:
   backend: usb                    # Options: usb | picamera2 | video_file
-  resolution: [1024, 768]        # Reduced resolution for better FPS
-  #resolution: [640, 480]
-  fps: 30                         # Target frame rate
+  #resolution: [1024, 768]        # Reduced resolution for better FPS
+  resolution: [640, 480]
+  fps: 20                         # Target frame rate
   video_path: null                # Path for video_file backend (optional)
   # device_id: 0                  # Camera device index (default: 0)
 
@@ -183,6 +183,7 @@ plda:
 models:
   face_detector: models/yunet.onnx
   face_embedder: models/mobilefacenet.onnx
+  #face_embedder: models/arcface_r100.onnx
 
 # -----------------------------------------------------------------------------
 # MJPEG Streaming
