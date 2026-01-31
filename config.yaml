@@ -51,11 +51,12 @@ tracking:
 # Quality Filtering
 # -----------------------------------------------------------------------------
 # Embeddings from low-quality frames are rejected to improve accuracy.
+# KEY: Out-of-focus faces produce unreliable embeddings causing FP/FN
 quality:
-  min_face_quality: 0.3           # Min quality for processing
+  min_face_quality: 0.5           # Min quality for processing (changed from 0.3)
   min_enroll_quality: 0.8         # Min quality for enrollment photos
   min_bbox_size: 40               # Min face bounding box size (pixels)
-  blur_threshold: 100.0           # Laplacian variance threshold for blur
+  blur_threshold: 50.0            # Laplacian variance threshold (changed from 100)
 
 # -----------------------------------------------------------------------------
 # Embedding Aggregation
@@ -75,14 +76,15 @@ fusion:
   embedding_window: 20            # Max embeddings per track
   embedding_min: 4                # Min embeddings before matching (reduced)
   embedding_sample_interval: 5    # Sample every N frames (increased for FPS)
-  embedding_quality_threshold: 0.30    # Min combined quality score (lowered)
+  embedding_quality_threshold: 0.40    # Min combined quality score (increased from 0.30)
   embedding_outlier_threshold: 0.30    # Max distance from centroid for inliers (relaxed)
 
-  # Quality score formula:
-  # combined = 0.40 × detection_conf
-  #          + 0.25 × blur_score (higher = sharper)
-  #          + 0.15 × brightness_score (optimal = 0.5)
-  #          + 0.20 × size_score (larger = better)
+  # Quality score formula (blur is most important for focus issues):
+  # combined = 0.25 × size_score (larger = better)
+  #          + 0.25 × detection_conf
+  #          + 0.50 × blur_score (higher = sharper) ← KEY for focus issues
+  #
+  # Hard cutoff: blur_metric < blur_threshold * 0.3 → quality = 0 (rejected)
 
 # -----------------------------------------------------------------------------
 # Decision Thresholds

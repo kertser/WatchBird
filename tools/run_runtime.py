@@ -308,11 +308,20 @@ class RecognitionPipeline:
                 track.bbox,
                 face_roi,
                 track.confidence,
-                min_bbox_size=self.config.quality["min_bbox_size"]
+                min_bbox_size=self.config.quality["min_bbox_size"],
+                blur_threshold=self.config.quality.get("blur_threshold", 150.0)
             )
 
-            # Skip if quality too low
+            # Skip if quality too low (includes blur-based rejection)
             if quality < self.config.quality["min_face_quality"]:
+                # Log blur rejection for debugging
+                blur_metric = quality_details.get("blur_metric", 0)
+                blur_threshold = self.config.quality.get("blur_threshold", 150.0)
+                if blur_metric < blur_threshold * 0.3:
+                    logger.debug(
+                        f"Track {track_id}: Rejected blurry frame "
+                        f"(blur={blur_metric:.1f} < {blur_threshold * 0.3:.1f})"
+                    )
                 continue
 
             # Extract embedding (let embedder handle alignment internally for accuracy)
@@ -322,20 +331,14 @@ class RecognitionPipeline:
             if embedding is None:
                 continue
 
-            # Compute simplified quality metrics for embedding aggregation
-            # Skip expensive Laplacian blur computation for FPS
-            bbox = track.bbox
-            face_size = int(((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) ** 0.5)
-
-            # Simple blur estimate from face size (larger faces = usually sharper)
-            blur_score = min(1.0, face_size / 100.0)
+            # Use actual quality metrics from compute_face_quality
+            blur_score = quality_details.get("blur_score", 0.5)
 
             # Simple brightness from detection confidence
             brightness = 0.5  # Assume optimal, skip gray conversion
 
-            # Face size: area of bounding box
-            bbox = track.bbox
-            face_size = int((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) ** 0.5)  # sqrt of area
+            # Face size from quality computation
+            face_size = int(quality_details.get("bbox_size", 50))
 
             # Add embedding to aggregator for this track with quality metrics
             self.embedding_manager.add_embedding(
