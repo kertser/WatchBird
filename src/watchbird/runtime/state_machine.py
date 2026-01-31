@@ -136,9 +136,24 @@ class TrackStateMachine:
                         f"requires margin {required_margin:.3f}"
                     )
 
+                # Consistency-based margin relaxation:
+                # If consistency is very high (2x required), we can trust the match even with low margin
+                # This handles cases with few enrolled identities that have similar embeddings
+                margin_ok = median_margin >= required_margin
+                if not margin_ok and consistency >= self.consistency_count * 2:
+                    # High consistency can compensate for low margin
+                    # Still require some minimal margin to avoid complete ties
+                    minimal_margin = 0.001
+                    if median_margin >= minimal_margin:
+                        margin_ok = True
+                        logger.debug(
+                            f"Track {self.track_id}: margin relaxed due to high consistency "
+                            f"({consistency} >= {self.consistency_count * 2})"
+                        )
+
                 if (
                     median_score >= self.t_accept and
-                    median_margin >= required_margin and
+                    margin_ok and
                     consistency >= self.consistency_count
                 ):
                     self.state = TrackState.FRIENDLY
@@ -200,10 +215,16 @@ class TrackStateMachine:
                 consistency = metrics.get("consistency", 0)
 
                 # Check if detection is still consistent with same person
+                # Apply same margin relaxation as for initial acceptance
+                margin_ok = median_margin >= self.t_margin
+                if not margin_ok and consistency >= self.consistency_count * 2:
+                    if median_margin >= 0.001:
+                        margin_ok = True
+
                 if (
                     person_id == self.person_id and
                     median_score >= self.t_accept and
-                    median_margin >= self.t_margin and
+                    margin_ok and
                     consistency >= self.consistency_count
                 ):
                     # Continuous detection - update confidence (gain confidence)

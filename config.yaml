@@ -95,11 +95,23 @@ fusion:
 #      │
 #      └──[timeout]──▶ ENEMY
 #
+# Calibrated from LOSO analysis:
+#   Known samples:   LLR 1.61-2.86 (mean 2.34), margin 0.18-1.17 (mean 0.76)
+#   Unknown samples: LLR -0.23-0.20 (mean 0.01)
+#
+# NOTE: Runtime margins can be lower than LOSO due to:
+#   - Only 2 enrolled identities with high similarity
+#   - Probe quality variations in real-time
+#   - Use high consistency to compensate for low margin
+#
 thresholds:
-  t_accept: 0.65                  # Min score for FRIENDLY (lowered)
-  t_margin: 0.03                  # Min margin between best and 2nd best (very low - identities are close)
+  t_accept: 0.8                  # Min calibrated score for FRIENDLY (from LOSO)
+  t_margin: 0.005                 # Min margin - very low since only 2 similar identities
   t_timeout: 15.0                 # Seconds in SUSPECT before ENEMY
-  identity_switch_margin: 0.10    # Extra margin required to switch identity
+  identity_switch_margin: 0.05    # Extra margin required to switch identity
+
+  # Consistency can compensate for low margin:
+  # If consistency >= 2x required AND score >= t_accept, accept even with low margin
 
 # -----------------------------------------------------------------------------
 # Face Index (Database)
@@ -120,6 +132,11 @@ index:
 #   - Dispersed enrollment embeddings (varied poses/quality)
 #   - Noisy probe embeddings (partial occlusion, extreme angles)
 #
+# Calibrated from LOSO analysis:
+#   Known samples:   LLR 1.61-2.86 (mean 2.34)
+#   Unknown samples: LLR -0.23-0.20 (mean 0.01)
+#   Perfect separation at LLR threshold ~0.9
+#
 plda:
   enabled: true                   # Use PLDA second stage scoring
   model_path: data/index/plda.npz # PLDA model file
@@ -132,11 +149,10 @@ plda:
   between_class_reg: 0.1          # Shrinkage for between-class covariance
   within_class_reg: 0.3           # Shrinkage for within-class covariance
 
-  # Decision thresholds (LLR-based)
-  # LLR > 0 means "same person more likely than different"
+  # Decision thresholds (LLR-based, from LOSO analysis)
   faiss_k: 5                      # Top-K candidates from FAISS
-  llr_threshold: 0.5              # Min LLR for acceptance (was 2.5)
-  margin_threshold: 0.3           # Min LLR margin between candidates (was 0.5)
+  llr_threshold: 1.0              # Min LLR for acceptance (conservative, known min=1.61)
+  margin_threshold: 0.005         # Min LLR margin - low since 2 similar identities
   calibrate: true                 # Map LLR to 0-1 range for display
 
 # -----------------------------------------------------------------------------
