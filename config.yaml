@@ -41,10 +41,11 @@ detection:
 # -----------------------------------------------------------------------------
 # Object Tracking (SORT-based)
 # -----------------------------------------------------------------------------
+# Optimized for fast movements and reliable CONFIRMED track maintenance
 tracking:
-  max_age: 30                     # Frames before track is deleted
-  min_hits: 3                     # Min detections to confirm track
-  iou_threshold: 0.2              # IoU threshold for matching - lower for fast motion
+  max_age: 60                     # Frames before track is deleted (increased for fast motion)
+  min_hits: 2                     # Min detections to confirm track (reduced for responsiveness)
+  iou_threshold: 0.15             # IoU threshold for matching (lowered for fast motion)
   # enable_reid: false            # Re-identification (disabled by default)
 
 # -----------------------------------------------------------------------------
@@ -117,7 +118,7 @@ thresholds:
   confirm_threshold: 0.9          # Cumulative confidence to enter CONFIRMED state
   confidence_gain_rate: 0.03      # EMA rate per positive frame (lower = slower but safer)
   confidence_decay_rate: 0.01     # Decay rate per negative frame
-  track_lost_timeout: 3.0         # Seconds before CONFIRMED drops back to FRIENDLY
+  track_lost_timeout: 5.0         # Seconds before CONFIRMED drops back to FRIENDLY (increased for fast motion)
 
   # Consistency can compensate for low margin:
   # If consistency >= 2x required AND score >= t_accept, accept even with low margin

@@ -136,10 +136,10 @@ def draw_detection_boxes(
     # Color by state
     if state == "CONFIRMED":
         color = (0, 255, 0)  # Bright Green - high confidence, tracking only
-        label = f"CONFIRMED: {person_id} ({cumulative_confidence:.0%})"
+        label = f"CONFIRMED: {person_id}"
     elif state == "FRIENDLY":
         color = (0, 200, 100)  # Light green/teal - still building confidence
-        label = f"FRIENDLY: {person_id} ({confidence:.2f}|{cumulative_confidence:.0%})"
+        label = f"FRIENDLY: {person_id} ({cumulative_confidence:.0%})"
     elif state == "ENEMY":
         color = (0, 0, 255)  # Red
         label = f"ENEMY: Track {track_id}"
