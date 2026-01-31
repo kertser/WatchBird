@@ -406,6 +406,19 @@ class EmbeddingAggregator:
         self._best_quality = 0.0
         self._best_embedding = None
 
+    def get_last_embedding(self) -> Optional[np.ndarray]:
+        """Get the most recent embedding from the buffer.
+
+        Useful for track recovery when matching new tracks against lost ones.
+
+        Returns:
+            Last embedding or None if buffer is empty
+        """
+        if len(self.buffer) == 0:
+            return None
+
+        return self.buffer[-1]['embedding'].copy()
+
 
 class TrackEmbeddingManager:
     """Manages embedding aggregators for multiple tracks.
@@ -540,3 +553,20 @@ class TrackEmbeddingManager:
         stale_ids = set(self.aggregators.keys()) - active_track_ids
         for track_id in stale_ids:
             del self.aggregators[track_id]
+
+    def get_last_embedding(self, track_id: int) -> Optional[np.ndarray]:
+        """Get the most recent embedding for a track.
+
+        Useful for track recovery - matching new tracks against lost ones.
+
+        Args:
+            track_id: Track identifier
+
+        Returns:
+            Last embedding or None if not available
+        """
+        if track_id not in self.aggregators:
+            return None
+
+        return self.aggregators[track_id].get_last_embedding()
+

@@ -120,6 +120,13 @@ thresholds:
   confidence_decay_rate: 0.01     # Decay rate per negative frame
   track_lost_timeout: 5.0         # Seconds before CONFIRMED drops back to FRIENDLY (increased for fast motion)
 
+  # Track recovery (fast re-approval of lost and reappeared tracks)
+  # When a CONFIRMED/FRIENDLY track is lost, we store its embedding
+  # When a new track appears, we check if it matches a recently lost track
+  # Data shows: same person ~0.48-0.70+, different person ~0.22-0.27
+  track_recovery_timeout: 15.0    # Seconds to keep lost tracks for recovery
+  track_recovery_threshold: 0.40  # Cosine similarity threshold for recovery
+
   # Consistency can compensate for low margin:
   # If consistency >= 2x required AND score >= t_accept, accept even with low margin
 

@@ -99,6 +99,9 @@ class TrackStateMachine:
         # Recognition skip flag for CONFIRMED state
         self.skip_recognition: bool = False
 
+        # Recovery flag - prevents normal transitions from overwriting recovered state
+        self._recovered: bool = False
+
         self.aggregator = TemporalAggregator(window_size=window_size)
         self.modalities_used: Dict[str, float] = {}
 
@@ -120,6 +123,67 @@ class TrackStateMachine:
         """
         self.last_seen_time = time.time()
         self.frames_since_seen = 0
+
+    def fast_recover(
+        self,
+        person_id: str,
+        cumulative_confidence: float,
+        min_confidence: float = 0.5
+    ) -> bool:
+        """Fast-recover a previously confirmed identity.
+
+        Called when a new track matches a recently lost CONFIRMED/FRIENDLY track.
+        Skips the full recognition process and directly enters CONFIRMED state
+        to avoid the full recognition flow.
+
+        Args:
+            person_id: The recovered person ID
+            cumulative_confidence: The cumulative confidence from the lost track
+            min_confidence: Minimum confidence to go directly to CONFIRMED
+
+        Returns:
+            True if recovery successful
+        """
+        # Mark as recovered to prevent normal transitions from overwriting
+        self._recovered = True
+
+        # Restore identity
+        self.person_id = person_id
+        self.locked_person_id = person_id
+
+        # Restore confidence (with slight reduction for safety)
+        # But ensure we reach CONFIRMED threshold to avoid going through FRIENDLY again
+        restored_cumulative = max(cumulative_confidence * 0.95, self.confirm_threshold)
+        self.cumulative_confidence = min(1.0, restored_cumulative)
+        self.confidence = max(0.8, cumulative_confidence)
+        self.locked_confidence = self.confidence
+
+        # Seed the aggregator with strong fake observations
+        # Use high scores to ensure the FRIENDLY block conditions are met
+        for _ in range(self.consistency_count + 5):
+            self.aggregator.add_observation(
+                person_id,
+                self.confidence,  # best_score
+                0.0,  # second_score (no competition = high margin)
+                0.9   # reliability
+            )
+
+        # Always go directly to CONFIRMED for recovered tracks
+        # This prevents the FRIENDLY block from potentially resetting to SUSPECT
+        self.state = TrackState.CONFIRMED
+        self.skip_recognition = True
+
+        logger.info(
+            f"Track {self.track_id} FAST RECOVERED → CONFIRMED ({person_id}, "
+            f"cumulative={self.cumulative_confidence:.2f})"
+        )
+
+        # Reset counters
+        self.inconsistent_frame_count = 0
+        self.last_seen_time = time.time()
+        self.start_time = time.time()
+
+        return True
 
     def update(
         self,
@@ -166,6 +230,14 @@ class TrackStateMachine:
             True if state changed, False otherwise
         """
         if self.state == TrackState.SUSPECT:
+            # If track was recovered, don't go through normal SUSPECT flow
+            # The recovered state is already set and we should respect it
+            if self._recovered and self.person_id is not None:
+                # Already recovered, skip SUSPECT logic
+                # Clear the flag so future transitions work normally
+                self._recovered = False
+                return False
+
             # Check for FRIENDLY transition
             person_id, metrics = self.aggregator.get_aggregated_decision(
                 consistency_count=self.consistency_count
@@ -222,6 +294,11 @@ class TrackStateMachine:
                     # Lock this identity
                     self.locked_person_id = person_id
                     self.locked_confidence = median_score
+
+                    # Initialize cumulative confidence if not already set (e.g., by recovery)
+                    # Start at the initial confidence level
+                    if self.cumulative_confidence < 0.01:
+                        self.cumulative_confidence = median_score * 0.5  # Start at 50% of score
 
                     logger.info(
                         f"Track {self.track_id} → FRIENDLY ({person_id}, "
@@ -321,12 +398,21 @@ class TrackStateMachine:
                         self.cumulative_confidence - self.confidence_decay_rate
                     )
 
-                    logger.debug(
-                        f"Track {self.track_id} FRIENDLY inconsistent frame "
-                        f"({self.inconsistent_frame_count}/{self.confidence_decay_threshold}): "
-                        f"detected={person_id}, expected={self.person_id}, "
-                        f"cumulative={self.cumulative_confidence:.3f}"
-                    )
+                    # For recovered tracks, be more lenient - allow same person with lower score
+                    if self._recovered and person_id == self.person_id:
+                        # Same person, just lower quality - don't count as inconsistent
+                        self.inconsistent_frame_count = max(0, self.inconsistent_frame_count - 1)
+                        logger.debug(
+                            f"Track {self.track_id} FRIENDLY (recovered, lenient): {person_id}, "
+                            f"score={median_score:.3f}, cumulative={self.cumulative_confidence:.3f}"
+                        )
+                    else:
+                        logger.debug(
+                            f"Track {self.track_id} FRIENDLY inconsistent frame "
+                            f"({self.inconsistent_frame_count}/{self.confidence_decay_threshold}): "
+                            f"detected={person_id}, expected={self.person_id}, "
+                            f"cumulative={self.cumulative_confidence:.3f}"
+                        )
 
                     # Check if we should degrade back to SUSPECT
                     if self.inconsistent_frame_count >= self.confidence_decay_threshold:
@@ -338,6 +424,7 @@ class TrackStateMachine:
                         self.confidence = 0.0
                         self.cumulative_confidence = 0.0
                         self.inconsistent_frame_count = 0
+                        self._recovered = False  # Clear recovery flag
                         self.start_time = time.time()  # Reset timeout
                         self.aggregator.clear()  # Clear buffer to start fresh
 
@@ -363,6 +450,7 @@ class TrackStateMachine:
                     self.confidence = 0.0
                     self.cumulative_confidence = 0.0
                     self.inconsistent_frame_count = 0
+                    self._recovered = False  # Clear recovery flag
                     self.start_time = time.time()
                     self.aggregator.clear()
 

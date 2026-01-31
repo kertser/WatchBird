@@ -68,6 +68,15 @@ class RecognitionPipeline:
         # Frame counters per track for sampling embeddings
         self.track_frame_counters: Dict[int, int] = {}
 
+        # Track recovery: store embeddings of recently lost CONFIRMED/FRIENDLY tracks
+        # Format: {lost_time: (person_id, embedding, cumulative_confidence, bbox_center)}
+        self.lost_tracks: Dict[float, tuple] = {}
+        self.track_recovery_timeout = 10.0  # Will be updated from config in initialize()
+        self.track_recovery_threshold = 0.65  # Will be updated from config in initialize()
+
+        # Store last known bounding box for each track (for recovery spatial matching)
+        self.track_last_bbox: Dict[int, np.ndarray] = {}
+
     def initialize(self, backend: str, video_path: Optional[str] = None, device_id: int = 0) -> bool:
         """Initialize all components.
 
@@ -246,8 +255,187 @@ class RecognitionPipeline:
             )
             self.mjpeg_server.start()
 
+        # Load track recovery config
+        self.track_recovery_timeout = self.config.thresholds.get("track_recovery_timeout", 10.0)
+        self.track_recovery_threshold = self.config.thresholds.get("track_recovery_threshold", 0.65)
+
         logger.info("Initialization complete!")
         return True
+
+    def _store_lost_track(
+        self,
+        person_id: str,
+        embedding: np.ndarray,
+        cumulative_confidence: float,
+        bbox: np.ndarray
+    ) -> None:
+        """Store a lost CONFIRMED/FRIENDLY track for potential recovery.
+
+        Args:
+            person_id: The identified person
+            embedding: Last known embedding
+            cumulative_confidence: Cumulative confidence at time of loss
+            bbox: Last known bounding box
+        """
+        # Calculate bbox center for spatial matching
+        bbox_center = ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+
+        # Store with current time as key
+        self.lost_tracks[time.time()] = (person_id, embedding, cumulative_confidence, bbox_center)
+
+        # Clean up old entries
+        current_time = time.time()
+        old_count = len(self.lost_tracks)
+        self.lost_tracks = {
+            t: v for t, v in self.lost_tracks.items()
+            if current_time - t < self.track_recovery_timeout
+        }
+        removed = old_count - len(self.lost_tracks)
+
+        logger.info(
+            f"Stored lost track for recovery: {person_id} "
+            f"(conf={cumulative_confidence:.2f}, center={bbox_center}). "
+            f"Total: {len(self.lost_tracks)} lost tracks"
+        )
+
+    def _try_track_recovery(
+        self,
+        embedding: np.ndarray,
+        bbox: np.ndarray
+    ) -> Optional[tuple]:
+        """Try to recover a lost track by matching embedding.
+
+        Args:
+            embedding: New track's embedding
+            bbox: New track's bounding box
+
+        Returns:
+            (person_id, cumulative_confidence) if recovered, None otherwise
+        """
+        if not self.lost_tracks:
+            return None
+
+        current_time = time.time()
+        bbox_center = ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+
+        best_match = None
+        best_similarity = self.track_recovery_threshold
+
+        for lost_time, (person_id, lost_embedding, cumulative_conf, lost_center) in list(self.lost_tracks.items()):
+            # Skip if too old
+            age = current_time - lost_time
+            if age > self.track_recovery_timeout:
+                continue
+
+            # Compute cosine similarity
+            similarity = np.dot(embedding, lost_embedding) / (
+                np.linalg.norm(embedding) * np.linalg.norm(lost_embedding) + 1e-6
+            )
+
+            # Boost similarity if spatially close (within 200 pixels)
+            spatial_dist = np.sqrt(
+                (bbox_center[0] - lost_center[0])**2 +
+                (bbox_center[1] - lost_center[1])**2
+            )
+            if spatial_dist < 200:
+                similarity += 0.05  # Small boost for spatial proximity
+
+            logger.debug(
+                f"Recovery candidate: {person_id}, sim={similarity:.3f}, "
+                f"threshold={self.track_recovery_threshold}, age={age:.1f}s, dist={spatial_dist:.0f}px"
+            )
+
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match = (person_id, cumulative_conf, lost_time)
+
+        if best_match:
+            person_id, cumulative_conf, lost_time = best_match
+            # Don't remove from lost tracks immediately - it might be needed for other new tracks
+            # in the same frame. The entry will expire naturally after track_recovery_timeout.
+            # Only remove if the similarity is very high (definite match)
+            if best_similarity > 0.7:
+                del self.lost_tracks[lost_time]
+
+            logger.info(
+                f"Track recovery: {person_id} (similarity={best_similarity:.3f}, "
+                f"conf={cumulative_conf:.2f}, age={current_time - lost_time:.1f}s)"
+            )
+            return (person_id, cumulative_conf)
+
+        # Log if we had candidates but none matched
+        if self.lost_tracks:
+            # Find the best similarity we found (even if below threshold)
+            best_sim_found = 0.0
+            best_person_found = None
+            for lost_time, (person_id, lost_embedding, cumulative_conf, lost_center) in self.lost_tracks.items():
+                age = current_time - lost_time
+                if age <= self.track_recovery_timeout:
+                    similarity = np.dot(embedding, lost_embedding) / (
+                        np.linalg.norm(embedding) * np.linalg.norm(lost_embedding) + 1e-6
+                    )
+                    if similarity > best_sim_found:
+                        best_sim_found = similarity
+                        best_person_found = person_id
+
+            if best_person_found:
+                logger.info(
+                    f"Track recovery failed: best candidate {best_person_found} "
+                    f"sim={best_sim_found:.3f} < threshold={self.track_recovery_threshold}"
+                )
+
+        return None
+
+    def _cleanup_lost_tracks(self, active_track_ids: set, tracks: list) -> None:
+        """Cleanup tracks that are no longer active and store for recovery.
+
+        IMPORTANT: This should be called BEFORE processing new tracks,
+        so that lost track embeddings are available for recovery.
+
+        Args:
+            active_track_ids: Set of currently active track IDs
+            tracks: List of current tracks (for bbox info)
+        """
+        # Only delete tracks that are NOT in the current tracks list at all
+        lost_track_ids = set(self.track_frame_counters.keys()) - active_track_ids
+
+        for track_id in lost_track_ids:
+            # Before deleting, store CONFIRMED/FRIENDLY tracks for potential recovery
+            if track_id in self.track_states:
+                state_machine = self.track_states[track_id]
+                if (state_machine.state.value in ("CONFIRMED", "FRIENDLY") and
+                    state_machine.person_id is not None and
+                    state_machine.cumulative_confidence > 0.3):
+
+                    # Get the centroid embedding for this track (more robust than last embedding)
+                    # Fall back to last embedding if centroid not available
+                    recovery_embedding = self.embedding_manager.get_centroid(track_id)
+                    if recovery_embedding is None:
+                        recovery_embedding = self.embedding_manager.get_last_embedding(track_id)
+
+                    if recovery_embedding is not None:
+                        # Use stored last known bbox if available
+                        last_bbox = self.track_last_bbox.get(track_id)
+
+                        if last_bbox is not None:
+                            self._store_lost_track(
+                                state_machine.person_id,
+                                recovery_embedding,
+                                state_machine.cumulative_confidence,
+                                last_bbox
+                            )
+                        else:
+                            logger.debug(f"Track {track_id}: No last bbox available for recovery storage")
+
+                del self.track_states[track_id]
+
+            if track_id in self.track_frame_counters:
+                del self.track_frame_counters[track_id]
+            if track_id in self.track_last_bbox:
+                del self.track_last_bbox[track_id]
+
+        # Also cleanup embedding manager
+        self.embedding_manager.cleanup_stale_tracks(active_track_ids)
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """Process single frame.
@@ -264,6 +452,11 @@ class RecognitionPipeline:
         # Update tracker with face detections (treating faces as persons for MVP)
         tracks = self.tracker.update(face_bboxes, face_confs, face_landmarks)
 
+        # IMPORTANT: Cleanup lost tracks BEFORE processing new tracks
+        # This ensures lost track embeddings are available for recovery
+        active_track_ids = {track.track_id for track in tracks}
+        self._cleanup_lost_tracks(active_track_ids, tracks)
+
         # Get embedding sample interval from config
         embedding_sample_interval = self.config.fusion.get("embedding_sample_interval", 1)
 
@@ -271,8 +464,12 @@ class RecognitionPipeline:
         for track in tracks:
             track_id = track.track_id
 
+            # Store last known bbox for recovery spatial matching
+            self.track_last_bbox[track_id] = track.bbox.copy() if hasattr(track.bbox, 'copy') else np.array(track.bbox)
+
             # Create state machine if new track
             if track_id not in self.track_states:
+                logger.info(f"New track {track_id} created, lost_tracks available: {len(self.lost_tracks)}")
                 self.track_states[track_id] = TrackStateMachine(
                     track_id=track_id,
                     t_accept=self.config.thresholds["t_accept"],
@@ -291,6 +488,29 @@ class RecognitionPipeline:
                 # Initialize frame counter for this track
                 self.track_frame_counters[track_id] = 0
 
+                # Try track recovery for new tracks
+                # Extract one embedding to check against lost tracks
+                if self.lost_tracks:
+                    face_roi = extract_roi(frame, track.bbox)
+                    if face_roi is not None and face_roi.size > 0:
+                        recovery_embedding = self.face_embedder.extract(face_roi)
+                        if recovery_embedding is not None:
+                            recovery_result = self._try_track_recovery(recovery_embedding, track.bbox)
+                            if recovery_result:
+                                person_id, cumulative_conf = recovery_result
+                                self.track_states[track_id].fast_recover(person_id, cumulative_conf)
+                                # Store the recovery embedding
+                                self.embedding_manager.add_embedding(
+                                    track_id, recovery_embedding, quality=0.8,
+                                    blur_score=0.8, brightness=0.5, face_size=50
+                                )
+                                continue  # Skip normal processing for this frame
+                            # Recovery failed - log at INFO for visibility
+                        else:
+                            logger.info(f"Track {track_id}: Recovery skipped (embedding extraction failed)")
+                else:
+                    logger.debug(f"Track {track_id}: New track, no lost tracks to recover from")
+
             state_machine = self.track_states[track_id]
 
             # For CONFIRMED tracks: only track, skip recognition
@@ -299,6 +519,20 @@ class RecognitionPipeline:
                 state_machine.notify_track_seen()
                 # Still check for state changes (e.g., track lost timeout)
                 state_machine._check_transition()
+
+                # Periodically extract embedding to keep buffer fresh for recovery
+                # Only every 30 frames (about once per second at 30fps)
+                if self.track_frame_counters.get(track_id, 0) % 30 == 0:
+                    face_roi = extract_roi(frame, track.bbox)
+                    if face_roi is not None and face_roi.size > 0:
+                        embedding = self.face_embedder.extract(face_roi)
+                        if embedding is not None:
+                            self.embedding_manager.add_embedding(
+                                track_id, embedding, quality=0.7,
+                                blur_score=0.7, brightness=0.5, face_size=50
+                            )
+
+                self.track_frame_counters[track_id] = self.track_frame_counters.get(track_id, 0) + 1
                 continue
 
             # Skip if already in terminal state (shouldn't happen with new logic)
@@ -430,23 +664,6 @@ class RecognitionPipeline:
                 event = state_machine.get_event()
                 self.event_emitter.emit(event)
 
-        # Cleanup lost tracks to prevent memory leaks
-        active_track_ids = {track.track_id for track in tracks}
-        # Also consider tracks stale if they haven't been updated recently
-        stale_track_ids = {
-            track.track_id for track in tracks
-            if track.time_since_update > 5  # Not updated in last 5 frames
-        }
-        lost_track_ids = (set(self.track_frame_counters.keys()) - active_track_ids) | stale_track_ids
-
-        for track_id in lost_track_ids:
-            if track_id in self.track_frame_counters:
-                del self.track_frame_counters[track_id]
-            if track_id in self.track_states:
-                del self.track_states[track_id]
-
-        # Also cleanup embedding manager
-        self.embedding_manager.cleanup_stale_tracks(active_track_ids)
 
         # Draw annotations
         annotated_frame = frame.copy()
