@@ -281,14 +281,27 @@ class RecognitionPipeline:
                     consistency_count=self.config.fusion["consistency_count"],
                     window_size=self.config.fusion["window_size"],
                     confidence_decay_threshold=self.config.fusion.get("confidence_decay_threshold", 3),
-                    identity_switch_margin=self.config.thresholds.get("identity_switch_margin", 0.10)
+                    identity_switch_margin=self.config.thresholds.get("identity_switch_margin", 0.10),
+                    # Cumulative confidence parameters
+                    confirm_threshold=self.config.thresholds.get("confirm_threshold", 0.95),
+                    confidence_gain_rate=self.config.thresholds.get("confidence_gain_rate", 0.05),
+                    confidence_decay_rate=self.config.thresholds.get("confidence_decay_rate", 0.02),
+                    track_lost_timeout=self.config.thresholds.get("track_lost_timeout", 3.0)
                 )
                 # Initialize frame counter for this track
                 self.track_frame_counters[track_id] = 0
 
             state_machine = self.track_states[track_id]
 
-            # Skip if already in terminal state
+            # For CONFIRMED tracks: only track, skip recognition
+            if state_machine.should_skip_recognition():
+                # Notify that track is still visible (keeps CONFIRMED state)
+                state_machine.notify_track_seen()
+                # Still check for state changes (e.g., track lost timeout)
+                state_machine._check_transition()
+                continue
+
+            # Skip if already in terminal state (shouldn't happen with new logic)
             if state_machine.is_terminal():
                 continue
 
@@ -457,6 +470,7 @@ class RecognitionPipeline:
                     state=state_machine.state.value,
                     person_id=state_machine.person_id,
                     confidence=state_machine.confidence,
+                    cumulative_confidence=state_machine.cumulative_confidence,
                     head_tilt=track.head_tilt,
                     landmarks=track.landmarks
                 )
@@ -469,6 +483,7 @@ class RecognitionPipeline:
                     state="DETECTING",
                     person_id=None,
                     confidence=track.confidence,
+                    cumulative_confidence=0.0,
                     head_tilt=track.head_tilt,
                     landmarks=track.landmarks
                 )

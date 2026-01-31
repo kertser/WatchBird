@@ -107,10 +107,17 @@ fusion:
 #   - Use high consistency to compensate for low margin
 #
 thresholds:
-  t_accept: 0.8                  # Min calibrated score for FRIENDLY (from LOSO)
+  t_accept: 0.7                   # Min calibrated score for FRIENDLY (from LOSO)
   t_margin: 0.005                 # Min margin - very low since only 2 similar identities
   t_timeout: 15.0                 # Seconds in SUSPECT before ENEMY
   identity_switch_margin: 0.05    # Extra margin required to switch identity
+
+  # Cumulative confidence settings (FRIENDLY → CONFIRMED)
+  # Once confirmed, system switches to tracking-only mode (no recognition)
+  confirm_threshold: 0.9          # Cumulative confidence to enter CONFIRMED state
+  confidence_gain_rate: 0.03      # EMA rate per positive frame (lower = slower but safer)
+  confidence_decay_rate: 0.01     # Decay rate per negative frame
+  track_lost_timeout: 3.0         # Seconds before CONFIRMED drops back to FRIENDLY
 
   # Consistency can compensate for low margin:
   # If consistency >= 2x required AND score >= t_accept, accept even with low margin

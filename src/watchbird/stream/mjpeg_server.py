@@ -113,6 +113,7 @@ def draw_detection_boxes(
     state: str,
     person_id: Optional[str] = None,
     confidence: float = 0.0,
+    cumulative_confidence: float = 0.0,
     head_tilt: float = 0.0,
     landmarks: Optional[np.ndarray] = None
 ) -> np.ndarray:
@@ -122,9 +123,10 @@ def draw_detection_boxes(
         frame: Input frame
         track_id: Track identifier
         bbox: Bounding box [x1, y1, x2, y2]
-        state: Track state (DETECTING, SUSPECT, FRIENDLY, ENEMY)
-        person_id: Person identifier (for FRIENDLY)
+        state: Track state (DETECTING, SUSPECT, FRIENDLY, CONFIRMED, ENEMY)
+        person_id: Person identifier (for FRIENDLY/CONFIRMED)
         confidence: Confidence score
+        cumulative_confidence: Cumulative confidence (for FRIENDLY→CONFIRMED)
         head_tilt: Head tilt angle in degrees (for rotated box)
         landmarks: Optional 5x2 array of facial landmarks
 
@@ -132,9 +134,12 @@ def draw_detection_boxes(
         Annotated frame
     """
     # Color by state
-    if state == "FRIENDLY":
-        color = (0, 255, 0)  # Green
-        label = f"FRIENDLY: {person_id} ({confidence:.2f})"
+    if state == "CONFIRMED":
+        color = (0, 255, 0)  # Bright Green - high confidence, tracking only
+        label = f"CONFIRMED: {person_id} ({cumulative_confidence:.0%})"
+    elif state == "FRIENDLY":
+        color = (0, 200, 100)  # Light green/teal - still building confidence
+        label = f"FRIENDLY: {person_id} ({confidence:.2f}|{cumulative_confidence:.0%})"
     elif state == "ENEMY":
         color = (0, 0, 255)  # Red
         label = f"ENEMY: Track {track_id}"
