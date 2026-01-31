@@ -10,7 +10,8 @@
 # -----------------------------------------------------------------------------
 camera:
   backend: usb                    # Options: usb | picamera2 | video_file
-  resolution: [1024, 768]         # Reduced resolution for better FPS
+  resolution: [1024, 768]        # Reduced resolution for better FPS
+  #resolution: [640, 480]
   fps: 30                         # Target frame rate
   video_path: null                # Path for video_file backend (optional)
   # device_id: 0                  # Camera device index (default: 0)
@@ -18,7 +19,7 @@ camera:
   # Auto-resolution tuning (USB camera only)
   # Automatically finds the highest resolution that achieves target FPS
   # NOTE: Disable this after finding optimal resolution to avoid camera conflicts
-  auto_resolution: true           # Set to true only for initial tuning
+  auto_resolution: false           # Set to true only for initial tuning
   target_fps: 20.0                # Target FPS for auto-tuning
   min_fps: 10.0                   # Minimum acceptable FPS
 
@@ -43,7 +44,7 @@ detection:
 tracking:
   max_age: 30                     # Frames before track is deleted
   min_hits: 3                     # Min detections to confirm track
-  iou_threshold: 0.3              # IoU threshold for matching
+  iou_threshold: 0.2              # IoU threshold for matching - lower for fast motion
   # enable_reid: false            # Re-identification (disabled by default)
 
 # -----------------------------------------------------------------------------
@@ -73,7 +74,7 @@ fusion:
   # Embedding aggregation (key for accuracy)
   embedding_window: 20            # Max embeddings per track
   embedding_min: 4                # Min embeddings before matching (reduced)
-  embedding_sample_interval: 4    # Sample every N frames (increased for FPS)
+  embedding_sample_interval: 5    # Sample every N frames (increased for FPS)
   embedding_quality_threshold: 0.30    # Min combined quality score (lowered)
   embedding_outlier_threshold: 0.30    # Max distance from centroid for inliers (relaxed)
 
@@ -108,23 +109,35 @@ index:
   meta_path: data/index/meta.jsonl          # Metadata (person IDs)
 
 # -----------------------------------------------------------------------------
-# PLDA Scoring (Second Stage)
+# PLDA Scoring (Likelihood Ratio Based)
 # -----------------------------------------------------------------------------
-# PLDA provides probabilistic scoring on top of FAISS for better accuracy.
-# Enabled by default. Falls back to FAISS-only if model not found.
+# PLDA provides probabilistic scoring using log-likelihood ratios (LLR).
+# KEY INSIGHT: LLR naturally handles the "unknown" problem:
+#   - LLR > 0: More likely same person
+#   - LLR < 0: More likely different person (unknown)
+#
+# The regularization parameters are crucial for handling:
+#   - Dispersed enrollment embeddings (varied poses/quality)
+#   - Noisy probe embeddings (partial occlusion, extreme angles)
 #
 plda:
   enabled: true                   # Use PLDA second stage scoring
   model_path: data/index/plda.npz # PLDA model file
-  faiss_k: 5                      # Top-K candidates from FAISS
-  llr_threshold: 2.5              # Min log-likelihood ratio
-  margin_threshold: 0.5           # Min PLDA margin
-  calibrate: true                 # Map LLR to 0-1 range
 
-  # Score blending (PLDA + FAISS):
-  # - High FAISS (≥0.75): 70% PLDA + 30% FAISS
-  # - Med FAISS (0.6-0.75): 50% PLDA + 50% FAISS
-  # - Low FAISS (<0.6): 30% PLDA + 70% FAISS
+  # Dimensionality reduction (helps with noise)
+  latent_dim: 128                 # Reduced dimensionality for stability
+
+  # Regularization (KEY for noisy embeddings)
+  # Higher values = more tolerant of pose/quality variation
+  between_class_reg: 0.1          # Shrinkage for between-class covariance
+  within_class_reg: 0.3           # Shrinkage for within-class covariance
+
+  # Decision thresholds (LLR-based)
+  # LLR > 0 means "same person more likely than different"
+  faiss_k: 5                      # Top-K candidates from FAISS
+  llr_threshold: 0.5              # Min LLR for acceptance (was 2.5)
+  margin_threshold: 0.3           # Min LLR margin between candidates (was 0.5)
+  calibrate: true                 # Map LLR to 0-1 range for display
 
 # -----------------------------------------------------------------------------
 # Models

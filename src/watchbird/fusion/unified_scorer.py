@@ -1,9 +1,13 @@
-"""Unified scorer combining FAISS similarity search with optional PLDA verification.
+"""Unified scorer combining FAISS similarity search with PLDA likelihood ratio scoring.
 
 Provides a clean interface for the recognition pipeline that:
 1. Uses FAISS for fast candidate retrieval (Stage 1)
-2. Optionally refines with PLDA log-likelihood ratio scoring (Stage 2)
-3. Falls back gracefully when PLDA is not available
+2. Refines with PLDA log-likelihood ratio scoring (Stage 2)
+3. Uses LLR thresholds for robust unknown/impostor rejection
+
+The key insight is that PLDA LLR scoring naturally handles the "unknown" problem:
+- LLR > 0: More likely same person
+- LLR < 0: More likely different person (potential unknown)
 """
 
 import logging
@@ -20,17 +24,20 @@ logger = logging.getLogger(__name__)
 
 
 class UnifiedScorer:
-    """Unified scoring backend combining FAISS + optional PLDA.
+    """Unified scoring backend combining FAISS + PLDA likelihood ratio scoring.
 
     Stage 1 (FAISS): Fast approximate nearest neighbor search using cosine similarity.
-                     Returns top-K candidates.
+                     Returns top-K candidates for PLDA scoring.
 
-    Stage 2 (PLDA):  Optional probabilistic verification using log-likelihood ratios.
-                     Provides better open-set rejection and calibrated scores.
+    Stage 2 (PLDA):  Probabilistic verification using log-likelihood ratios.
+                     LLR > 0 indicates same person is more likely than different.
+                     LLR < 0 indicates different person (or unknown) is more likely.
+                     This naturally handles the "unknown" rejection problem.
 
     Decision Logic:
-        - If PLDA enabled and model exists: Use PLDA scores + margin logic
-        - Else: Fall back to existing cosine similarity thresholds
+        - If PLDA enabled and model exists: Use PLDA LLR scores
+        - LLR threshold determines unknown rejection
+        - Margin threshold ensures confident discrimination
     """
 
     def __init__(
@@ -194,7 +201,11 @@ class UnifiedScorer:
         candidate_ids: List[str],
         faiss_candidates: Dict[str, List[float]]
     ) -> Tuple[Optional[str], float, float, Dict[str, float]]:
-        """Score using PLDA on FAISS candidates.
+        """Score using PLDA log-likelihood ratios on FAISS candidates.
+
+        Uses the new PLDA LLR approach for unknown rejection:
+        - LLR > 0: More likely same person
+        - LLR < 0: More likely different/unknown
 
         Args:
             embedding: Probe embedding
@@ -204,28 +215,67 @@ class UnifiedScorer:
         Returns:
             Tuple of (best_person_id, best_score, margin, all_scores)
         """
-        # Get FAISS scores for validation
+        # Get FAISS scores for reference
         faiss_scores = {
             person_id: max(sims)
             for person_id, sims in faiss_candidates.items()
         }
 
-        # Get best FAISS result for reference
+        # Get best FAISS result for validation
         faiss_sorted = sorted(faiss_scores.items(), key=lambda x: x[1], reverse=True)
         best_faiss_id = faiss_sorted[0][0]
         best_faiss_score = faiss_sorted[0][1]
 
-        # If FAISS score is too low, don't trust PLDA either
-        # This catches partial occlusions and poor quality embeddings
-        faiss_min_threshold = 0.5  # Minimum cosine similarity to proceed with PLDA
+        # If FAISS score is too low, embeddings may be too noisy for PLDA
+        faiss_min_threshold = 0.45
         if best_faiss_score < faiss_min_threshold:
             logger.debug(
                 f"PLDA skipped: FAISS score {best_faiss_score:.3f} < {faiss_min_threshold:.3f}"
             )
             return self._score_faiss_only(faiss_candidates)
 
-        # Get PLDA scores for all candidates
+        # Get PLDA LLR scores for all candidates
         plda_scores = self.plda_scorer.score_batch(embedding, candidate_ids)
+
+        # Sort by LLR (higher = more likely same person)
+        sorted_plda = sorted(plda_scores.items(), key=lambda x: x[1], reverse=True)
+
+        if not sorted_plda:
+            return None, 0.0, 0.0, {}
+
+        best_plda_id, best_llr = sorted_plda[0]
+        second_llr = sorted_plda[1][1] if len(sorted_plda) > 1 else float('-inf')
+        plda_margin = best_llr - second_llr
+
+        # KEY INSIGHT: Use LLR directly for unknown rejection
+        # LLR < threshold means "unknown" is more likely than any enrolled identity
+        if best_llr < self.plda_llr_threshold:
+            logger.debug(
+                f"PLDA reject (unknown): LLR {best_llr:.2f} < threshold {self.plda_llr_threshold:.2f}"
+            )
+            # Return None to indicate unknown, but include the LLR for debugging
+            return None, best_llr, plda_margin, plda_scores
+
+        # Check margin - if top two candidates are too close, not confident
+        if plda_margin < self.plda_margin_threshold and len(sorted_plda) > 1:
+            logger.debug(
+                f"PLDA uncertain: margin {plda_margin:.2f} < threshold {self.plda_margin_threshold:.2f}"
+            )
+            # Still return the best match, but the low margin will be considered by caller
+            pass
+
+        # PLDA and FAISS agreement check
+        # If they disagree and FAISS has high confidence, investigate
+        if best_plda_id != best_faiss_id:
+            faiss_margin = best_faiss_score - (faiss_sorted[1][1] if len(faiss_sorted) > 1 else 0.0)
+
+            # If FAISS is very confident but PLDA disagrees, there may be an issue
+            if faiss_margin > 0.15 and best_faiss_score > 0.7:
+                logger.debug(
+                    f"PLDA/FAISS disagree: PLDA={best_plda_id}(LLR={best_llr:.2f}), "
+                    f"FAISS={best_faiss_id}(sim={best_faiss_score:.3f}). "
+                    f"Using PLDA decision."
+                )
 
         # Calibrate scores to [0, 1] range if enabled
         if self.plda_calibrate:
@@ -233,86 +283,22 @@ class UnifiedScorer:
                 person_id: self.plda_scorer.calibrate_score(llr)
                 for person_id, llr in plda_scores.items()
             }
+            best_score = self.plda_scorer.calibrate_score(best_llr)
+            calibrated_margin = best_score - (
+                self.plda_scorer.calibrate_score(second_llr)
+                if np.isfinite(second_llr) else 0.0
+            )
         else:
             all_scores = plda_scores
-
-        if not all_scores:
-            return None, 0.0, 0.0, {}
-
-        # Sort by calibrated score descending
-        sorted_persons = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)
-
-        best_plda_id, best_plda_score = sorted_persons[0]
-        second_score = sorted_persons[1][1] if len(sorted_persons) > 1 else 0.0
-        plda_margin = best_plda_score - second_score
-
-        # Get raw LLR for threshold check
-        best_llr = plda_scores[best_plda_id]
-
-        # Apply PLDA-specific thresholds
-        if best_llr < self.plda_llr_threshold:
-            logger.debug(
-                f"PLDA reject: LLR {best_llr:.2f} < threshold {self.plda_llr_threshold:.2f}"
-            )
-            # Fall back to FAISS scores for this frame
-            return self._score_faiss_only(faiss_candidates)
-
-        # CRITICAL: PLDA must agree with FAISS on the winner
-        # If PLDA disagrees with FAISS, trust FAISS (it's more reliable with limited training data)
-        if best_plda_id != best_faiss_id:
-            # PLDA and FAISS disagree - check if FAISS has a clear winner
-            faiss_margin = best_faiss_score - (faiss_sorted[1][1] if len(faiss_sorted) > 1 else 0.0)
-
-            if faiss_margin > 0.05:  # FAISS has a clear winner
-                logger.debug(
-                    f"PLDA disagrees with FAISS: PLDA={best_plda_id}, FAISS={best_faiss_id}. "
-                    f"Using FAISS (margin={faiss_margin:.3f})"
-                )
-                return self._score_faiss_only(faiss_candidates)
-            else:
-                # Both are uncertain, be conservative
-                logger.debug(
-                    f"PLDA/FAISS disagree and both uncertain. Using FAISS."
-                )
-                return self._score_faiss_only(faiss_candidates)
-
-        # PLDA and FAISS agree - blend PLDA confidence with FAISS score
-        # This prevents PLDA from being overconfident when FAISS similarity is low
-        #
-        # Strategy: Use weighted average of PLDA calibrated score and FAISS score
-        # - High FAISS score (>0.75): trust PLDA more (70% PLDA, 30% FAISS)
-        # - Medium FAISS score (0.6-0.75): balanced (50% PLDA, 50% FAISS)
-        # - Low FAISS score (<0.6): trust FAISS more (30% PLDA, 70% FAISS)
-
-        if best_faiss_score >= 0.75:
-            plda_weight = 0.7
-        elif best_faiss_score >= 0.6:
-            plda_weight = 0.5
-        else:
-            plda_weight = 0.3
-
-        faiss_weight = 1.0 - plda_weight
-
-        # Blend the scores
-        blended_score = plda_weight * best_plda_score + faiss_weight * best_faiss_score
-
-        # Also compute blended margin
-        faiss_margin = best_faiss_score - (faiss_sorted[1][1] if len(faiss_sorted) > 1 else 0.0)
-        blended_margin = plda_weight * plda_margin + faiss_weight * faiss_margin
-
-        # Update all_scores with blended values
-        blended_all_scores = {}
-        for person_id in all_scores:
-            faiss_val = faiss_scores.get(person_id, 0.0)
-            plda_val = all_scores[person_id]
-            blended_all_scores[person_id] = plda_weight * plda_val + faiss_weight * faiss_val
+            best_score = best_llr
+            calibrated_margin = plda_margin
 
         logger.debug(
-            f"PLDA+FAISS blend: FAISS={best_faiss_score:.3f}, PLDA={best_plda_score:.3f}, "
-            f"blended={blended_score:.3f} (weights: PLDA={plda_weight:.1f}, FAISS={faiss_weight:.1f})"
+            f"PLDA result: id={best_plda_id}, LLR={best_llr:.2f}, "
+            f"calibrated={best_score:.3f}, margin={calibrated_margin:.3f}"
         )
 
-        return best_plda_id, blended_score, blended_margin, blended_all_scores
+        return best_plda_id, best_score, calibrated_margin, all_scores
 
 
     def get_scoring_info(self) -> Dict[str, any]:

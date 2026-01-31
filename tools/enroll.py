@@ -12,7 +12,7 @@ import numpy as np
 from watchbird.config import Config
 from watchbird.detect.face_detector import FaceDetector
 from watchbird.embed.face_embedder import FaceEmbedder
-from watchbird.fusion.plda_scorer import PLDAScorer
+from watchbird.fusion.plda_scorer import PLDAScorer, PLDAConfig
 from watchbird.index.faiss_wrapper import FaissIndex
 from watchbird.index.meta_store import MetaStore
 from watchbird.utils.image_ops import extract_roi
@@ -277,11 +277,17 @@ def main() -> None:
                 "Skipping PLDA training."
             )
         else:
-            plda_scorer = PLDAScorer(
+            # Get PLDA config from config file
+            plda_config = PLDAConfig(
                 embedding_dim=embeddings.shape[1],
-                plda_dim=min(128, embeddings.shape[1] // 2),
-                regularization=1e-5
+                latent_dim=config.get('plda.latent_dim', 128),
+                between_class_reg=config.get('plda.between_class_reg', 0.1),
+                within_class_reg=config.get('plda.within_class_reg', 0.3),
+                min_eigenvalue=1e-4,
+                min_samples_per_class=3
             )
+
+            plda_scorer = PLDAScorer(config=plda_config)
 
             if plda_scorer.train(embeddings, labels):
                 plda_path = config.get('plda.model_path', 'data/index/plda.npz')
@@ -289,7 +295,10 @@ def main() -> None:
                     logger.info(f"Saved PLDA model to {plda_path}")
                     logger.info(
                         f"PLDA model: {len(unique_identities)} identities, "
-                        f"{len(embeddings)} total samples"
+                        f"{len(embeddings)} total samples, "
+                        f"latent_dim={plda_config.latent_dim}, "
+                        f"between_reg={plda_config.between_class_reg}, "
+                        f"within_reg={plda_config.within_class_reg}"
                     )
                 else:
                     logger.error("Failed to save PLDA model")

@@ -123,3 +123,18 @@ class Config:
         """Get inference configuration (GPU settings)."""
         return self._config.get("inference", {"use_gpu": False, "gpu_device_id": 0})
 
+    @property
+    def plda(self) -> Dict[str, Any]:
+        """Get PLDA configuration."""
+        return self._config.get("plda", {
+            "enabled": False,
+            "model_path": "data/index/plda.npz",
+            "latent_dim": 128,
+            "between_class_reg": 0.1,
+            "within_class_reg": 0.3,
+            "faiss_k": 5,
+            "llr_threshold": 0.5,
+            "margin_threshold": 0.3,
+            "calibrate": True
+        })
+

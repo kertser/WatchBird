@@ -77,16 +77,32 @@ fusion:
   confidence_decay_threshold: 25  # Frames before decay
 ```
 
-## PLDA Scoring
+## PLDA Scoring (Likelihood Ratio)
+
+PLDA provides probabilistic scoring using log-likelihood ratios (LLR) for robust unknown rejection:
+- **LLR > 0**: More likely same person
+- **LLR < 0**: More likely different person (unknown)
 
 ```yaml
 plda:
-  enabled: true             # Use PLDA second stage
+  enabled: true                   # Use PLDA second stage
   model_path: data/index/plda.npz
-  faiss_k: 5                # Top-K candidates from FAISS
-  llr_threshold: 2.5        # Min log-likelihood ratio
-  calibrate: true           # Map scores to 0-1
+  
+  # Dimensionality reduction
+  latent_dim: 128                 # Reduced dimension for stability
+  
+  # Regularization (for noisy embeddings)
+  between_class_reg: 0.1          # Between-class shrinkage
+  within_class_reg: 0.3           # Within-class shrinkage (higher = more tolerant)
+  
+  # Decision thresholds
+  faiss_k: 5                      # Top-K candidates from FAISS
+  llr_threshold: 0.5              # Min LLR for acceptance
+  margin_threshold: 0.3           # Min margin between candidates
+  calibrate: true                 # Map scores to 0-1 range
 ```
+
+**Note**: With few enrolled identities (<3), PLDA falls back to cosine-similarity based scoring.
 
 ## Models
 
