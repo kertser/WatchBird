@@ -262,6 +262,91 @@ class RecognitionPipeline:
         logger.info("Initialization complete!")
         return True
 
+    def _try_match_active_track(
+        self,
+        embedding: np.ndarray,
+        bbox: np.ndarray,
+        exclude_track_id: int
+    ) -> Optional[tuple]:
+        """Try to match a new track against active FRIENDLY/CONFIRMED tracks.
+
+        This handles the case where a face briefly disappears and reappears
+        as a new track, while the old track is still "active" in the tracker.
+
+        Args:
+            embedding: New track's embedding
+            bbox: New track's bounding box
+            exclude_track_id: Track ID to exclude (the new track itself)
+
+        Returns:
+            (person_id, cumulative_confidence) if matched, None otherwise
+        """
+        bbox_center = ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+        best_match = None
+        best_score = 0.0
+
+        for track_id, state_machine in self.track_states.items():
+            if track_id == exclude_track_id:
+                continue
+
+            # Only consider FRIENDLY or CONFIRMED tracks with good confidence
+            if state_machine.state.value not in ("FRIENDLY", "CONFIRMED"):
+                continue
+            if state_machine.person_id is None:
+                continue
+            if state_machine.cumulative_confidence < 0.3:
+                continue
+
+            # Check spatial proximity first
+            last_bbox = self.track_last_bbox.get(track_id)
+            if last_bbox is None:
+                continue
+
+            old_center = ((last_bbox[0] + last_bbox[2]) / 2, (last_bbox[1] + last_bbox[3]) / 2)
+            spatial_dist = np.sqrt(
+                (bbox_center[0] - old_center[0])**2 +
+                (bbox_center[1] - old_center[1])**2
+            )
+
+            # Only consider if spatially close (within 300 pixels)
+            if spatial_dist > 300:
+                continue
+
+            # Get embedding from the active track
+            active_embedding = self.embedding_manager.get_centroid(track_id)
+            if active_embedding is None:
+                active_embedding = self.embedding_manager.get_last_embedding(track_id)
+            if active_embedding is None:
+                continue
+
+            # Compute cosine similarity
+            similarity = np.dot(embedding, active_embedding) / (
+                np.linalg.norm(embedding) * np.linalg.norm(active_embedding) + 1e-6
+            )
+
+            # Boost for spatial proximity
+            proximity_boost = max(0, (300 - spatial_dist) / 300) * 0.1
+            combined_score = similarity + proximity_boost
+
+            logger.debug(
+                f"Active track match candidate: track={track_id}, person={state_machine.person_id}, "
+                f"sim={similarity:.3f}, dist={spatial_dist:.0f}px, score={combined_score:.3f}"
+            )
+
+            if combined_score > best_score and similarity > self.track_recovery_threshold:
+                best_score = combined_score
+                best_match = (state_machine.person_id, state_machine.cumulative_confidence, track_id)
+
+        if best_match:
+            person_id, cumulative_conf, matched_track_id = best_match
+            logger.info(
+                f"Active track match: {person_id} from track {matched_track_id} "
+                f"(score={best_score:.3f}, conf={cumulative_conf:.2f})"
+            )
+            return (person_id, cumulative_conf)
+
+        return None
+
     def _store_lost_track(
         self,
         person_id: str,
@@ -489,12 +574,15 @@ class RecognitionPipeline:
                 self.track_frame_counters[track_id] = 0
 
                 # Try track recovery for new tracks
-                # Extract one embedding to check against lost tracks
-                if self.lost_tracks:
-                    face_roi = extract_roi(frame, track.bbox)
-                    if face_roi is not None and face_roi.size > 0:
-                        recovery_embedding = self.face_embedder.extract(face_roi)
-                        if recovery_embedding is not None:
+                # Extract one embedding to check against lost tracks AND active tracks
+                face_roi = extract_roi(frame, track.bbox)
+                recovery_done = False
+
+                if face_roi is not None and face_roi.size > 0:
+                    recovery_embedding = self.face_embedder.extract(face_roi)
+                    if recovery_embedding is not None:
+                        # First try lost tracks
+                        if self.lost_tracks:
                             recovery_result = self._try_track_recovery(recovery_embedding, track.bbox)
                             if recovery_result:
                                 person_id, cumulative_conf = recovery_result
@@ -504,12 +592,25 @@ class RecognitionPipeline:
                                     track_id, recovery_embedding, quality=0.8,
                                     blur_score=0.8, brightness=0.5, face_size=50
                                 )
-                                continue  # Skip normal processing for this frame
-                            # Recovery failed - log at INFO for visibility
-                        else:
-                            logger.info(f"Track {track_id}: Recovery skipped (embedding extraction failed)")
-                else:
-                    logger.debug(f"Track {track_id}: New track, no lost tracks to recover from")
+                                recovery_done = True
+
+                        # If no lost track match, try matching against active FRIENDLY/CONFIRMED tracks
+                        # This handles the case where tracker still has the old track active
+                        if not recovery_done:
+                            active_match = self._try_match_active_track(recovery_embedding, track.bbox, track_id)
+                            if active_match:
+                                person_id, cumulative_conf = active_match
+                                self.track_states[track_id].fast_recover(person_id, cumulative_conf)
+                                self.embedding_manager.add_embedding(
+                                    track_id, recovery_embedding, quality=0.8,
+                                    blur_score=0.8, brightness=0.5, face_size=50
+                                )
+                                recovery_done = True
+
+                        if recovery_done:
+                            continue  # Skip normal processing for this frame
+                    else:
+                        logger.debug(f"Track {track_id}: Recovery skipped (embedding extraction failed)")
 
             state_machine = self.track_states[track_id]
 

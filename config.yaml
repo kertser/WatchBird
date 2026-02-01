@@ -115,8 +115,8 @@ thresholds:
 
   # Cumulative confidence settings (FRIENDLY → CONFIRMED)
   # Once confirmed, system switches to tracking-only mode (no recognition)
-  confirm_threshold: 0.9          # Cumulative confidence to enter CONFIRMED state
-  confidence_gain_rate: 0.03      # EMA rate per positive frame (lower = slower but safer)
+  confirm_threshold: 1.0          # Cumulative confidence to enter CONFIRMED state (100%)
+  confidence_gain_rate: 0.08      # EMA rate per positive frame (faster buildup)
   confidence_decay_rate: 0.01     # Decay rate per negative frame
   track_lost_timeout: 5.0         # Seconds before CONFIRMED drops back to FRIENDLY (increased for fast motion)
 

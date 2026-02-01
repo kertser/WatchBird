@@ -296,9 +296,9 @@ class TrackStateMachine:
                     self.locked_confidence = median_score
 
                     # Initialize cumulative confidence if not already set (e.g., by recovery)
-                    # Start at the initial confidence level
+                    # Start at 0% for clean 0-100% progression
                     if self.cumulative_confidence < 0.01:
-                        self.cumulative_confidence = median_score * 0.5  # Start at 50% of score
+                        self.cumulative_confidence = 0.0  # Start at 0%
 
                     logger.info(
                         f"Track {self.track_id} → FRIENDLY ({person_id}, "
