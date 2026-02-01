@@ -657,7 +657,8 @@ class RecognitionPipeline:
 
                         # If no lost track match, try matching against active FRIENDLY/CONFIRMED tracks
                         # This handles the case where tracker still has the old track active
-                        if not recovery_done:
+                        # Can be disabled via config if causing false positives
+                        if not recovery_done and self.config.thresholds.get("active_track_matching", True):
                             active_match = self._try_match_active_track(recovery_embedding, track.bbox, track_id)
                             if active_match:
                                 person_id, cumulative_conf = active_match

@@ -114,7 +114,7 @@ fusion:
 #   - Use high consistency to compensate for low margin
 #
 thresholds:
-  t_accept: 0.7                   # Min calibrated score for FRIENDLY (from LOSO)
+  t_accept: 0.90                  # Min calibrated score for FRIENDLY (INCREASED to reduce FP)
   t_margin: 0.005                 # Min margin - very low since only 2 similar identities
   t_timeout: 15.0                 # Seconds in SUSPECT before ENEMY
   identity_switch_margin: 0.05    # Extra margin required to switch identity
@@ -129,9 +129,11 @@ thresholds:
   # Track recovery (fast re-approval of lost and reappeared tracks)
   # When a CONFIRMED/FRIENDLY track is lost, we store its embedding
   # When a new track appears, we check if it matches a recently lost track
+  # IMPORTANT: Set high threshold to avoid false positives!
   # Data shows: same person ~0.48-0.70+, different person ~0.22-0.27
   track_recovery_timeout: 15.0    # Seconds to keep lost tracks for recovery
-  track_recovery_threshold: 0.40  # Cosine similarity threshold for recovery
+  track_recovery_threshold: 0.75  # Cosine similarity threshold (INCREASED from 0.40)
+  active_track_matching: false    # Disable matching against currently active tracks
 
   # Consistency can compensate for low margin:
   # If consistency >= 2x required AND score >= t_accept, accept even with low margin
