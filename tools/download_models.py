@@ -1,4 +1,4 @@
-"""Download better face recognition models."""
+"""Download face detection and recognition models."""
 import os
 import sys
 import urllib.request
@@ -12,11 +12,12 @@ def download_file(url: str, output_path: str) -> bool:
 
         def show_progress(block_num, block_size, total_size):
             downloaded = block_num * block_size
-            percent = min(100, downloaded * 100 / total_size)
-            bar_length = 50
-            filled = int(bar_length * downloaded / total_size)
-            bar = '█' * filled + '-' * (bar_length - filled)
-            print(f'\r[{bar}] {percent:.1f}% ({downloaded}/{total_size} bytes)', end='')
+            if total_size > 0:
+                percent = min(100, downloaded * 100 / total_size)
+                bar_length = 50
+                filled = int(bar_length * percent / 100)
+                bar = '█' * filled + '-' * (bar_length - filled)
+                print(f'\r[{bar}] {percent:.1f}%', end='')
 
         urllib.request.urlretrieve(url, output_path, show_progress)
         print("\n✓ Download complete!")
@@ -26,60 +27,134 @@ def download_file(url: str, output_path: str) -> bool:
         return False
 
 def main():
-    """Download recommended face recognition models."""
+    """Download face detection and recognition models."""
     models_dir = Path("models")
     models_dir.mkdir(exist_ok=True)
 
     print("=" * 70)
-    print("WatchBird - Better Face Recognition Model Downloader")
+    print("WatchBird - Model Downloader")
     print("=" * 70)
 
-    models = {
+    # =========================================================================
+    # DETECTORS
+    # =========================================================================
+    detectors = {
         "1": {
-            "name": "ArcFace ResNet100 (Highest Accuracy, Slower)",
-            "url": "https://github.com/onnx/models/raw/main/vision/body_analysis/arcface/model/arcfaceresnet100-8.onnx",
-            "filename": "arcface_r100.onnx",
-            "size": "~250 MB",
-            "accuracy": "99.8%",
-            "speed": "Slow (~500ms on RPi4)"
+            "name": "SCRFD 2.5G (Recommended - GPU + Landmarks)",
+            "url": "https://github.com/yakhyo/facial-analysis/releases/download/v0.0.1/det_2.5g.onnx",
+            "filename": "scrfd_2.5g.onnx",
+            "size": "3.1 MB",
+            "gpu": True,
+            "landmarks": True,
         },
         "2": {
-            "name": "MobileFaceNet v2 (Balanced, Recommended)",
-            "url": "https://github.com/onnx/models/raw/main/vision/body_analysis/arcface/model/arcfaceresnet100-8.onnx",
-            "filename": "mobilefacenet_v2.onnx",
-            "size": "~4 MB",
-            "accuracy": "99.5%",
-            "speed": "Fast (~100ms on RPi4)"
+            "name": "SCRFD 10G (Most Accurate - GPU + Landmarks)",
+            "url": "https://github.com/yakhyo/facial-analysis/releases/download/v0.0.1/det_10g.onnx",
+            "filename": "scrfd_10g.onnx",
+            "size": "16.1 MB",
+            "gpu": True,
+            "landmarks": True,
         },
         "3": {
-            "name": "SFace (Sigmoid-Constrained, Robust)",
-            "url": "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
-            "filename": "sface.onnx",
-            "size": "~43 MB",
-            "accuracy": "99.6%",
-            "speed": "Medium (~200ms on RPi4)"
-        }
+            "name": "SCRFD 500M (Fastest - GPU + Landmarks)",
+            "url": "https://github.com/yakhyo/facial-analysis/releases/download/v0.0.1/det_500m.onnx",
+            "filename": "scrfd_500m.onnx",
+            "size": "2.4 MB",
+            "gpu": True,
+            "landmarks": True,
+        },
+        "4": {
+            "name": "UltraFace RFB-320 (Fast - GPU, No Landmarks)",
+            "url": "https://github.com/onnx/models/raw/main/validated/vision/body_analysis/ultraface/models/version-RFB-320.onnx",
+            "filename": "ultraface_rfb320.onnx",
+            "size": "1.2 MB",
+            "gpu": True,
+            "landmarks": False,
+        },
     }
 
-    print("\nAvailable models:")
-    for key, model in models.items():
-        print(f"\n{key}. {model['name']}")
-        print(f"   Accuracy: {model['accuracy']}")
-        print(f"   Speed: {model['speed']}")
-        print(f"   Size: {model['size']}")
+    # =========================================================================
+    # EMBEDDERS
+    # =========================================================================
+    embedders = {
+        "1": {
+            "name": "ArcFace R100 (Best Accuracy)",
+            "url": "https://github.com/onnx/models/raw/main/validated/vision/body_analysis/arcface/model/arcfaceresnet100-8.onnx",
+            "filename": "arcface_r100.onnx",
+            "size": "249 MB",
+        },
+        "2": {
+            "name": "MobileFaceNet (Fast, Good Accuracy)",
+            "url": "https://github.com/yakhyo/facial-analysis/releases/download/v0.0.1/w600k_r50.onnx",
+            "filename": "mobilefacenet.onnx",
+            "size": "166 MB",
+        },
+    }
+
+    # =========================================================================
+    # MENU
+    # =========================================================================
+    print("\n--- FACE DETECTORS ---")
+    for key, model in detectors.items():
+        gpu_str = "GPU" if model["gpu"] else "CPU"
+        lm_str = "✓ Landmarks" if model["landmarks"] else "✗ No Landmarks"
+        exists = "✓" if (models_dir / model["filename"]).exists() else " "
+        print(f"  [{exists}] {key}. {model['name']}")
+        print(f"       {gpu_str} | {lm_str} | {model['size']}")
+
+    print("\n--- FACE EMBEDDERS ---")
+    for key, model in embedders.items():
+        exists = "✓" if (models_dir / model["filename"]).exists() else " "
+        print(f"  [{exists}] {int(key)+4}. {model['name']}")
+        print(f"       {model['size']}")
+
+    print("\n--- OPTIONS ---")
+    print("  A. Download all recommended (SCRFD 2.5G + ArcFace R100)")
+    print("  Q. Quit")
 
     print("\n" + "=" * 70)
-    choice = input("Select model to download (1-3, or 'q' to quit): ").strip()
+    choice = input("Select model to download (1-6, A, or Q): ").strip().upper()
 
-    if choice.lower() == 'q':
+    if choice == 'Q':
         print("Cancelled.")
         return
 
-    if choice not in models:
+    if choice == 'A':
+        # Download recommended set
+        to_download = [
+            detectors["1"],  # SCRFD 2.5G
+        ]
+        # Check if arcface exists
+        if not (models_dir / "arcface_r100.onnx").exists():
+            to_download.append(embedders["1"])  # ArcFace R100
+
+        for model in to_download:
+            output_path = models_dir / model['filename']
+            if output_path.exists():
+                print(f"\n✓ {model['filename']} already exists, skipping...")
+                continue
+            print(f"\nDownloading: {model['name']}")
+            download_file(model['url'], str(output_path))
+
+        print("\n" + "=" * 70)
+        print("✓ Recommended models downloaded!")
+        print("\nUpdate config.yaml:")
+        print("  detection:")
+        print("    detector_type: scrfd")
+        print("  models:")
+        print("    face_detector: models/scrfd_2.5g.onnx")
+        print("    face_embedder: models/arcface_r100.onnx")
+        return
+
+    # Map choice to model
+    if choice in detectors:
+        selected = detectors[choice]
+    elif choice in ['5', '6']:
+        selected = embedders[str(int(choice) - 4)]
+    else:
         print("Invalid choice.")
         return
 
-    selected = models[choice]
     output_path = models_dir / selected['filename']
 
     if output_path.exists():
@@ -94,14 +169,6 @@ def main():
 
     if download_file(selected['url'], str(output_path)):
         print(f"\n✓ Model saved to: {output_path}")
-        print("\nNext steps:")
-        print(f"1. Update config.yaml:")
-        print(f"   models:")
-        print(f"     face_embedder: {output_path}")
-        print(f"\n2. Re-run enrollment:")
-        print(f"   python tools/enroll.py --data-dir friendly --config config.yaml")
-        print(f"\n3. Test recognition:")
-        print(f"   python tools/run_runtime.py --backend usb --config config.yaml")
     else:
         print("\n✗ Failed to download model")
         print("\nManual download:")

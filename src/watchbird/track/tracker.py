@@ -158,11 +158,12 @@ class Tracker:
             track.age += 1
             track.time_since_update += 1
 
-        # Build landmarks dict for easy lookup
+        # Build landmarks dict for easy lookup (skip None landmarks)
         landmarks_dict = {}
         if landmarks_list is not None:
             for i, landmarks in enumerate(landmarks_list):
-                landmarks_dict[i] = landmarks
+                if landmarks is not None:
+                    landmarks_dict[i] = landmarks
 
         # Match detections to tracks
         matched_tracks, unmatched_detections = self._match_detections(

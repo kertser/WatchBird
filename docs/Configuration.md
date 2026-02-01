@@ -16,8 +16,20 @@ camera:
 
 ```yaml
 detection:
-  face_conf_threshold: 0.7  # Min confidence (0-1)
+  detector_type: scrfd      # scrfd | ultraface | yunet
+  face_conf_threshold: 0.5  # Min confidence (0-1)
+  max_detection_size: 640   # Max image dimension for detection
 ```
+
+### Detector Options
+
+| Detector | Backend | Landmarks | Speed | Accuracy |
+|----------|---------|-----------|-------|----------|
+| `scrfd` | GPU (DirectML/CUDA) | ✅ 5-point | Fast | Best |
+| `ultraface` | GPU (DirectML/CUDA) | ❌ None | Fastest | Good |
+| `yunet` | CPU only | ✅ 5-point | Medium | Good |
+
+**Recommendation**: Use `scrfd` for best accuracy with GPU acceleration and proper facial landmarks.
 
 ## Tracking
 
@@ -108,11 +120,22 @@ plda:
 
 ```yaml
 models:
-  face_detector: models/yunet.onnx
-  face_embedder: models/mobilefacenet.onnx  # Recommended
+  face_detector: models/scrfd_2.5g.onnx     # Recommended (GPU + landmarks)
+  face_embedder: models/arcface_r100.onnx   # Best accuracy
 ```
 
-Available embedders:
+### Available Detectors
+
+| Model | Backend | Landmarks | Size | Notes |
+|-------|---------|-----------|------|-------|
+| `scrfd_2.5g.onnx` | GPU | ✅ Yes | 3.1MB | Recommended |
+| `ultraface_rfb320.onnx` | GPU | ❌ No | 1.2MB | Fast, no landmarks |
+| `yunet.onnx` | CPU | ✅ Yes | 232KB | OpenCV fallback |
+
+Download SCRFD models from: https://github.com/yakhyo/facial-analysis/releases
+
+### Available Embedders
+
 | Model | Speed | Accuracy | Size |
 |-------|-------|----------|------|
 | `mobilefacenet.onnx` | Fast | Good | 4MB |

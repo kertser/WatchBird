@@ -12,7 +12,7 @@ camera:
   backend: usb                    # Options: usb | picamera2 | video_file
   #resolution: [1024, 768]        # Reduced resolution for better FPS
   resolution: [640, 480]
-  fps: 20                         # Target frame rate
+  fps: 30                         # Target frame rate
   video_path: null                # Path for video_file backend (optional)
   # device_id: 0                  # Camera device index (default: 0)
 
@@ -26,13 +26,19 @@ camera:
 # -----------------------------------------------------------------------------
 # Face Detection
 # -----------------------------------------------------------------------------
+# detector_type options:
+#   - yunet: OpenCV YuNet (CPU only)
+#   - ultraface: UltraFace ONNX (GPU, fast, no landmarks)
+#   - scrfd: SCRFD ONNX (GPU, accurate landmarks) ← Recommended
+#
 # For high resolution (1080p+), use detection_scale or max_detection_size
 # to run detection on downscaled images (3-5x faster).
 # Bounding boxes are automatically scaled back to full resolution.
 #
 detection:
-  face_conf_threshold: 0.7        # Min detection confidence
-  # nms_threshold: 0.3            # Non-max suppression threshold
+  detector_type: scrfd            # GPU-accelerated with proper landmarks
+  face_conf_threshold: 0.5        # Min detection confidence
+  # nms_threshold: 0.4            # Non-max suppression threshold
 
   # High-resolution optimization (KEY FOR PERFORMANCE):
   max_detection_size: 640         # Detection at 640px for good accuracy
@@ -175,15 +181,22 @@ plda:
 # -----------------------------------------------------------------------------
 # Models
 # -----------------------------------------------------------------------------
-# Available face embedders:
-#   - mobilefacenet.onnx  (4MB, fast, good accuracy) ← Recommended
-#   - arcface_r100.onnx   (249MB, slow, best accuracy)
-#   - adaface_r100.onnx   (249MB, slow, best accuracy)
+# Face detectors:
+#   - yunet.onnx: OpenCV YuNet (CPU only, 232KB)
+#   - ultraface_rfb320.onnx: UltraFace (GPU, fast, no landmarks, 1.2MB)
+#   - scrfd_2.5g.onnx: SCRFD (GPU, accurate landmarks, 3.1MB) ← Recommended
+#
+# Face embedders:
+#   - mobilefacenet.onnx  (4MB, fast, good accuracy)
+#   - arcface_r100.onnx   (249MB, slower, best accuracy) ← Current
+#   - adaface_r100.onnx   (249MB, slower, best accuracy)
 #
 models:
-  face_detector: models/yunet.onnx
-  face_embedder: models/mobilefacenet.onnx
-  #face_embedder: models/arcface_r100.onnx
+  face_detector: models/scrfd_2.5g.onnx   # GPU with landmarks
+  #face_detector: models/ultraface_rfb320.onnx  # GPU, no landmarks
+  #face_detector: models/yunet.onnx            # CPU fallback
+  #face_embedder: models/mobilefacenet.onnx
+  face_embedder: models/arcface_r100.onnx
 
 # -----------------------------------------------------------------------------
 # MJPEG Streaming

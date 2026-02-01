@@ -32,12 +32,16 @@ USB Camera ──┐
 PiCamera2 ───┘
 ```
 
-### 2. Face Detector (YuNet)
+### 2. Face Detector (SCRFD/YuNet/UltraFace)
 ```
-Frame ──▶ YuNet ──▶ [bbox, confidence, landmarks]
-                         │
-                         ▼
-              Filter: confidence > 0.7
+Frame ──▶ Detector ──▶ [bbox, confidence, landmarks]
+                │              │
+                │              ▼
+                │    Filter: confidence > 0.5
+                │
+                ├── SCRFD (GPU, accurate landmarks) ← Recommended
+                ├── UltraFace (GPU, fast, no landmarks)
+                └── YuNet (CPU only, OpenCV)
 ```
 
 ### 3. Tracker (SORT-based)
@@ -174,7 +178,10 @@ WatchBird/
 │
 ├── src/watchbird/
 │   ├── camera/              # Camera backends
-│   ├── detect/              # Face detection (YuNet)
+│   ├── detect/              # Face detection
+│   │   ├── face_detector.py         # YuNet (CPU)
+│   │   ├── ultraface_detector.py    # UltraFace (GPU)
+│   │   └── scrfd_detector.py        # SCRFD (GPU) ← Recommended
 │   ├── embed/               # Face embedding extraction
 │   ├── track/               # Object tracking (SORT)
 │   ├── fusion/

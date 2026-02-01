@@ -6,7 +6,6 @@ import logging
 import time
 from typing import Dict, Optional
 
-import cv2
 import numpy as np
 
 from watchbird.camera.usb_backend import USBCameraBackend
@@ -17,6 +16,8 @@ except ImportError:
     Picamera2Backend = None  # type: ignore
 from watchbird.config import Config
 from watchbird.detect.face_detector import FaceDetector
+from watchbird.detect.ultraface_detector import UltraFaceDetector
+from watchbird.detect.scrfd_detector import SCRFDDetector
 from watchbird.embed.face_embedder import FaceEmbedder
 from watchbird.fusion.embedding_aggregator import TrackEmbeddingManager
 from watchbird.fusion.similarity import SimilarityFusion
@@ -157,15 +158,37 @@ class RecognitionPipeline:
             logger.error("Failed to open camera")
             return False
 
-        # Face detector
-        self.face_detector = FaceDetector(
-            model_path=self.config.models.get("face_detector"),
-            conf_threshold=self.config.detection["face_conf_threshold"],
-            use_gpu=self.config.inference.get("use_gpu", True),
-            gpu_device_id=self.config.inference.get("gpu_device_id", 0),
-            detection_scale=self.config.detection.get("detection_scale", 1.0),
-            max_detection_size=self.config.detection.get("max_detection_size", 640)
-        )
+        # Face detector - choose based on detector_type config
+        detector_type = self.config.detection.get("detector_type", "yunet")
+
+        if detector_type == "scrfd":
+            # SCRFD - GPU accelerated with proper landmark detection
+            self.face_detector = SCRFDDetector(
+                model_path=self.config.models.get("face_detector"),
+                conf_threshold=self.config.detection["face_conf_threshold"],
+                use_gpu=self.config.inference.get("use_gpu", True),
+                gpu_device_id=self.config.inference.get("gpu_device_id", 0),
+                max_detection_size=self.config.detection.get("max_detection_size", 640)
+            )
+        elif detector_type == "ultraface":
+            # UltraFace - GPU accelerated but no landmark detection
+            self.face_detector = UltraFaceDetector(
+                model_path=self.config.models.get("face_detector"),
+                conf_threshold=self.config.detection["face_conf_threshold"],
+                use_gpu=self.config.inference.get("use_gpu", True),
+                gpu_device_id=self.config.inference.get("gpu_device_id", 0),
+                max_detection_size=self.config.detection.get("max_detection_size", 640)
+            )
+        else:
+            # Default to YuNet (CPU-only via OpenCV)
+            self.face_detector = FaceDetector(
+                model_path=self.config.models.get("face_detector"),
+                conf_threshold=self.config.detection["face_conf_threshold"],
+                use_gpu=self.config.inference.get("use_gpu", True),
+                gpu_device_id=self.config.inference.get("gpu_device_id", 0),
+                detection_scale=self.config.detection.get("detection_scale", 1.0),
+                max_detection_size=self.config.detection.get("max_detection_size", 640)
+            )
 
         if not self.face_detector.load():
             logger.error("Failed to load face detector")

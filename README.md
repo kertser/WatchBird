@@ -34,10 +34,10 @@ View stream: `http://localhost:8080/stream`
 ```
 ┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────┐
 │  Camera  │───>│ Detector │───>│   Tracker     │───>│ Embedder │
-│  Frame   │    │  YuNet   │    │  SORT-based   │    │ ArcFace  │
+│  Frame   │    │  SCRFD   │    │  SORT-based   │    │ ArcFace  │
 └──────────┘    └──────────┘    └───────────────┘    └────┬─────┘
-                                                          │
-                                                          ▼
+                    │ GPU                                 │
+                    ▼                                     ▼
 ┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────┐
 │  Output  │<───│  State   │<───│  Aggregator   │<───│  Scorer  │
 │ FRIENDLY │    │ Machine  │    │  Multi-frame  │    │FAISS+PLDA│
@@ -46,12 +46,20 @@ View stream: `http://localhost:8080/stream`
 
 ### Key Concepts
 
-1. **Detection**: Find faces in each frame (YuNet)
+1. **Detection**: Find faces in each frame (SCRFD with GPU acceleration)
 2. **Tracking**: Assign consistent IDs across frames (SORT)
-3. **Embedding**: Extract 512-dim face vector (MobileFaceNet)
+3. **Embedding**: Extract 512-dim face vector (ArcFace/MobileFaceNet)
 4. **Aggregation**: Collect multiple embeddings, compute quality-weighted centroid
 5. **Scoring**: Match against enrolled faces (FAISS + PLDA)
 6. **State Machine**: SUSPECT → FRIENDLY/ENEMY based on confidence
+
+### Detector Options
+
+| Detector | GPU | Landmarks | Notes |
+|----------|-----|-----------|-------|
+| SCRFD | ✅ | ✅ 5-point | Recommended |
+| UltraFace | ✅ | ❌ | Fast, no landmarks |
+| YuNet | ❌ | ✅ 5-point | CPU fallback |
 
 ## Embedding Aggregation
 
@@ -133,21 +141,24 @@ camera:
 
 ## Configuration
 
-````
-
 ```yaml
+detection:
+  detector_type: scrfd     # scrfd (GPU) | ultraface (GPU) | yunet (CPU)
+  face_conf_threshold: 0.5 # Detection confidence threshold
+
 thresholds:
-  t_accept: 0.78       # Min score for FRIENDLY
-  t_margin: 0.20       # Min margin between candidates
+  t_accept: 0.70       # Min score for FRIENDLY
+  t_margin: 0.005      # Min margin between candidates
   t_timeout: 15.0      # Seconds before ENEMY
 
 fusion:
   embedding_window: 20      # Embeddings to collect
-  embedding_min: 6          # Min before matching
-  consistency_count: 12     # Consistent frames needed
+  embedding_min: 4          # Min before matching
+  consistency_count: 10     # Consistent frames needed
 
 models:
-  face_embedder: models/mobilefacenet.onnx
+  face_detector: models/scrfd_2.5g.onnx    # GPU + landmarks
+  face_embedder: models/arcface_r100.onnx  # Best accuracy
 ```
 
 ## Tools
