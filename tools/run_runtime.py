@@ -39,6 +39,39 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def convert_scrfd_landmarks_to_roi(landmarks: np.ndarray, bbox: np.ndarray) -> np.ndarray:
+    """Convert SCRFD landmarks from frame coordinates to ROI coordinates for embedder.
+
+    SCRFD and the embedder use different landmark ordering conventions:
+    - SCRFD: landmarks are labeled left/right from the subject's perspective
+    - Embedder (ArcFace reference): landmarks are labeled left/right from image perspective
+
+    This function:
+    1. Shifts landmarks from frame coords to ROI coords (subtracts bbox origin)
+    2. Reorders landmarks to match embedder expectation (swaps 0↔1 and 3↔4)
+
+    Args:
+        landmarks: SCRFD landmarks in frame coordinates, shape (5, 2)
+        bbox: Bounding box [x1, y1, x2, y2]
+
+    Returns:
+        Landmarks in ROI coordinates, reordered for embedder, shape (5, 2)
+    """
+    x1, y1 = int(bbox[0]), int(bbox[1])
+    lm = landmarks.copy()
+    lm[:, 0] -= x1  # Shift X to ROI coords
+    lm[:, 1] -= y1  # Shift Y to ROI coords
+
+    # Reorder: swap indices 0↔1 (eyes) and 3↔4 (mouth corners)
+    return np.array([
+        lm[1],  # SCRFD[1] "right eye" → embedder[0]
+        lm[0],  # SCRFD[0] "left eye" → embedder[1]
+        lm[2],  # nose (unchanged)
+        lm[4],  # SCRFD[4] "right mouth" → embedder[3]
+        lm[3],  # SCRFD[3] "left mouth" → embedder[4]
+    ], dtype=np.float32)
+
+
 class RecognitionPipeline:
     """Main recognition pipeline."""
 
@@ -601,8 +634,13 @@ class RecognitionPipeline:
                 face_roi = extract_roi(frame, track.bbox)
                 recovery_done = False
 
+                # Convert landmarks for embedder
+                recovery_landmarks = None
+                if track.landmarks is not None:
+                    recovery_landmarks = convert_scrfd_landmarks_to_roi(track.landmarks, track.bbox)
+
                 if face_roi is not None and face_roi.size > 0:
-                    recovery_embedding = self.face_embedder.extract(face_roi)
+                    recovery_embedding = self.face_embedder.extract(face_roi, landmarks=recovery_landmarks)
                     if recovery_embedding is not None:
                         # First try lost tracks
                         if self.lost_tracks:
@@ -649,7 +687,12 @@ class RecognitionPipeline:
                 if self.track_frame_counters.get(track_id, 0) % 30 == 0:
                     face_roi = extract_roi(frame, track.bbox)
                     if face_roi is not None and face_roi.size > 0:
-                        embedding = self.face_embedder.extract(face_roi)
+                        # Convert landmarks for embedder
+                        refresh_landmarks = None
+                        if track.landmarks is not None:
+                            refresh_landmarks = convert_scrfd_landmarks_to_roi(track.landmarks, track.bbox)
+
+                        embedding = self.face_embedder.extract(face_roi, landmarks=refresh_landmarks)
                         if embedding is not None:
                             self.embedding_manager.add_embedding(
                                 track_id, embedding, quality=0.7,
@@ -674,6 +717,11 @@ class RecognitionPipeline:
             # Extract face ROI
             face_roi = extract_roi(frame, track.bbox)
 
+            # Convert SCRFD landmarks to ROI coordinates for embedder
+            roi_landmarks = None
+            if track.landmarks is not None:
+                roi_landmarks = convert_scrfd_landmarks_to_roi(track.landmarks, track.bbox)
+
             # Compute face quality
             quality, quality_details = compute_face_quality(
                 track.bbox,
@@ -695,9 +743,8 @@ class RecognitionPipeline:
                     )
                 continue
 
-            # Extract embedding (let embedder handle alignment internally for accuracy)
-            # Note: Passing landmarks was causing misalignment issues
-            embedding = self.face_embedder.extract(face_roi)
+            # Extract embedding using SCRFD landmarks (faster than re-detecting)
+            embedding = self.face_embedder.extract(face_roi, landmarks=roi_landmarks)
 
             if embedding is None:
                 continue
