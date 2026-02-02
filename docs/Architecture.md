@@ -8,17 +8,18 @@
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────┐   ┌──────────┐   ┌─────────┐   ┌──────────┐   ┌───────────┐    │
-│  │ Camera  │──>│ Detector │──>│ Tracker │──>│ Embedder │──>│Aggregator │    │
-│  └─────────┘   └──────────┘   └─────────┘   └──────────┘   └─────┬─────┘    │
-│                                                                  │          │
-│                                                                  ▼          │
-│  ┌─────────┐   ┌──────────┐   ┌─────────────────────────────────────┐       │
-│  │ Output  │<──│  State   │<──│           Unified Scorer            │       │
-│  │ Stream  │   │ Machine  │   │  ┌─────────┐      ┌──────────┐      │       │
-│  └─────────┘   └──────────┘   │  │  FAISS  │ ───> │   PLDA   │      │       │
-│                               │  │ (fast)  │      │(accurate)│      │       │
-│                               │  └─────────┘      └──────────┘      │       │
-│                               └─────────────────────────────────────┘       │
+│  │ Camera  │──>│Face Det. │──>│ Tracker │──>│ Embedder │──>│Aggregator │    │
+│  └────┬────┘   └──────────┘   └─────────┘   └──────────┘   └─────┬─────┘    │
+│       │                                                           │          │
+│       │        ┌──────────┐   ┌──────────┐   ┌──────────┐        ▼          │
+│       └───────>│Body Det. │──>│Segmenter │──>│  CLIP    │  ┌───────────┐    │
+│                └──────────┘   └────┬─────┘   │Classifier│  │  Scorer   │    │
+│                                    │         └────┬─────┘  │FAISS+PLDA │    │
+│                                    │              │        └─────┬─────┘    │
+│  ┌─────────┐   ┌──────────┐       │              │              │          │
+│  │ Output  │<──│  State   │<──────┴──────────────┴──────────────┘          │
+│  │ Stream  │   │ Machine  │  (colored contours + classification labels)    │
+│  └─────────┘   └──────────┘                                                 │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -32,29 +33,57 @@ USB Camera ──┐
 PiCamera2 ───┘
 ```
 
-### 2. Face Detector (YuNet)
+### 2. Face Detector (SCRFD)
 ```
-Frame ──▶ YuNet ──▶ [bbox, confidence, landmarks]
-                         │
-                         ▼
-              Filter: confidence > 0.7
-```
-
-### 3. Tracker (SORT-based)
-```
-Detections ──▶ Hungarian Matching ──▶ Track IDs
-                     │
-                     ▼
-              Track = {id, bbox, age, hits}
+Frame ──▶ Detector ──▶ [bbox, confidence, landmarks]
+                │              │
+                │              ▼
+                │    Filter: confidence > 0.5
+                │
+                └── SCRFD (DirectML GPU, accurate 5-point landmarks)
 ```
 
-### 4. Face Embedder
+### 2b. Body Detector (YOLOv8)
 ```
-Face ROI ──▶ Preprocess ──▶ Model ──▶ 512-dim vector
-             (112x112)      │
-                            ├── MobileFaceNet (fastest)
-                            ├── ArcFace R100 (accurate)
-                            └── AdaFace R100 (balanced)
+Frame ──▶ YOLOv8 ──▶ [body_bbox, confidence]
+                │              │
+                │              ▼
+                │    Filter: class=person, confidence > 0.5
+                │
+                └── YOLOv8n (Nano - 6.3MB, DirectML GPU)
+                
+Body-to-Face Matching:
+  - Spatial heuristics (face in upper 40% of body)
+  - Horizontal alignment (face centered on body)
+```
+
+### 2c. Human Segmenter (PP-HumanSeg)
+```
+Body ROI ──▶ Segmenter ──▶ Binary Mask ──▶ Contours
+                │                              │
+                │                              ▼
+                │              ┌─────────────────────────┐
+                │              │ Colored by:             │
+                │              │ • Recognition State     │
+                │              │ • CLIP Classification   │
+                │              └─────────────────────────┘
+                │
+                └── PP-HumanSeg Lite (2.1MB, DirectML GPU)
+```
+
+### 2d. Person Classifier (CLIP)
+```
+Body Crop ──▶ CLIP ──▶ [soldier | armed_civilian | unarmed_civilian]
+               │                    │
+               │                    ▼
+               │        ┌─────────────────────────┐
+               │        │ Display Labels:          │
+               │        │ • IDF 85%  → Green      │
+               │        │ • ARMED 72% → Red       │
+               │        │ • CIV 63%  → Cyan       │
+               │        └─────────────────────────┘
+               │
+               └── OpenAI CLIP ViT-B/32 (PyTorch + DirectML)
 ```
 
 ### 5. Embedding Aggregator
@@ -174,7 +203,10 @@ WatchBird/
 │
 ├── src/watchbird/
 │   ├── camera/              # Camera backends
-│   ├── detect/              # Face detection (YuNet)
+│   ├── detect/              # Face detection
+│   │   ├── face_detector.py         # YuNet (CPU)
+│   │   ├── ultraface_detector.py    # UltraFace (GPU)
+│   │   └── scrfd_detector.py        # SCRFD (GPU) ← Recommended
 │   ├── embed/               # Face embedding extraction
 │   ├── track/               # Object tracking (SORT)
 │   ├── fusion/

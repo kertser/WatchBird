@@ -16,8 +16,32 @@ camera:
 
 ```yaml
 detection:
-  face_conf_threshold: 0.7  # Min confidence (0-1)
+  detector_type: scrfd      # scrfd (GPU with landmarks)
+  face_conf_threshold: 0.5  # Min confidence (0-1)
+  max_detection_size: 640   # Max image dimension for detection
+  
+  # Body detection and segmentation
+  body_detection: true      # Enable YOLOv8 body detection
+  body_conf_threshold: 0.6  # Min body detection confidence
+  segmentation: true        # Enable PP-HumanSeg contours
+  segmentation_threshold: 0.8  # Min segmentation probability
+  
+  # Contour visualization
+  contour_thickness: 1      # Line thickness
+  contour_fill_alpha: 0.15  # Fill transparency (0-1)
+  
+  # Person classification (CLIP-based)
+  person_classification: true   # Enable soldier/civilian detection
+  classification_interval: 5    # Classify every N frames
 ```
+
+### Face Detector
+
+| Detector | Backend | Landmarks | Speed | Accuracy |
+|----------|---------|-----------|-------|----------|
+| `scrfd` | GPU (DirectML/CUDA) | ✅ 5-point | Fast | Best |
+
+**Recommendation**: Use `scrfd` for best accuracy with GPU acceleration and proper facial landmarks.
 
 ## Tracking
 
@@ -77,31 +101,77 @@ fusion:
   confidence_decay_threshold: 25  # Frames before decay
 ```
 
-## PLDA Scoring
+## PLDA Scoring (Likelihood Ratio)
+
+PLDA provides probabilistic scoring using log-likelihood ratios (LLR) for robust unknown rejection:
+- **LLR > 0**: More likely same person
+- **LLR < 0**: More likely different person (unknown)
 
 ```yaml
 plda:
-  enabled: true             # Use PLDA second stage
+  enabled: true                   # Use PLDA second stage
   model_path: data/index/plda.npz
-  faiss_k: 5                # Top-K candidates from FAISS
-  llr_threshold: 2.5        # Min log-likelihood ratio
-  calibrate: true           # Map scores to 0-1
+  
+  # Dimensionality reduction
+  latent_dim: 128                 # Reduced dimension for stability
+  
+  # Regularization (for noisy embeddings)
+  between_class_reg: 0.1          # Between-class shrinkage
+  within_class_reg: 0.3           # Within-class shrinkage (higher = more tolerant)
+  
+  # Decision thresholds
+  faiss_k: 5                      # Top-K candidates from FAISS
+  llr_threshold: 0.5              # Min LLR for acceptance
+  margin_threshold: 0.3           # Min margin between candidates
+  calibrate: true                 # Map scores to 0-1 range
 ```
+
+**Note**: With few enrolled identities (<3), PLDA falls back to cosine-similarity based scoring.
 
 ## Models
 
 ```yaml
 models:
-  face_detector: models/yunet.onnx
-  face_embedder: models/mobilefacenet.onnx  # Recommended
+  # Face recognition
+  face_detector: models/scrfd_2.5g.onnx     # GPU + landmarks
+  face_embedder: models/arcface_r100.onnx   # Best accuracy
+  
+  # Body detection and segmentation
+  body_detector: models/yolov8n.onnx        # Person detection
+  human_segmenter: models/human_seg.onnx    # Body contours
+  
+  # CLIP classifier
+  clip_cache: models/clip_cache             # Local cache (~600MB)
 ```
 
-Available embedders:
+### Face Detector
+
+| Model | Backend | Landmarks | Size | Notes |
+|-------|---------|-----------|------|-------|
+| `scrfd_2.5g.onnx` | GPU | ✅ Yes | 3.1MB | Recommended |
+
+### Face Embedder
+
 | Model | Speed | Accuracy | Size |
 |-------|-------|----------|------|
 | `mobilefacenet.onnx` | Fast | Good | 4MB |
 | `arcface_r100.onnx` | Slow | Best | 249MB |
 | `adaface_r100.onnx` | Slow | Best | 249MB |
+
+### Body Detection
+
+| Model | Backend | Size | Notes |
+|-------|---------|------|-------|
+| `yolov8n.onnx` | GPU | 6.3MB | Nano - fast, recommended |
+| `human_seg.onnx` | GPU | 2.1MB | PP-HumanSeg Lite |
+
+### CLIP Classifier
+
+| Model | Backend | Size | Notes |
+|-------|---------|------|-------|
+| OpenAI CLIP ViT-B/32 | PyTorch + DirectML | ~600MB | Auto-downloaded |
+
+Categories: `soldier` (IDF), `armed_civilian` (threat), `unarmed_civilian`
 
 ## Inference
 

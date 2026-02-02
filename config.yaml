@@ -10,36 +10,78 @@
 # -----------------------------------------------------------------------------
 camera:
   backend: usb                    # Options: usb | picamera2 | video_file
-  resolution: [640, 480]          # [width, height] in pixels
+  #resolution: [1024, 768]        # Reduced resolution for better FPS
+  resolution: [640, 480]
   fps: 30                         # Target frame rate
   video_path: null                # Path for video_file backend (optional)
   # device_id: 0                  # Camera device index (default: 0)
 
+  # Auto-resolution tuning (USB camera only)
+  # Automatically finds the highest resolution that achieves target FPS
+  # NOTE: Disable this after finding optimal resolution to avoid camera conflicts
+  auto_resolution: false           # Set to true only for initial tuning
+  target_fps: 20.0                # Target FPS for auto-tuning
+  min_fps: 10.0                   # Minimum acceptable FPS
+
 # -----------------------------------------------------------------------------
 # Face Detection
 # -----------------------------------------------------------------------------
+# detector_type options:
+#   - yunet: OpenCV YuNet (CPU only)
+#   - ultraface: UltraFace ONNX (GPU, fast, no landmarks)
+#   - scrfd: SCRFD ONNX (GPU, accurate landmarks) ← Recommended
+#
+# For high resolution (1080p+), use detection_scale or max_detection_size
+# to run detection on downscaled images (3-5x faster).
+# Bounding boxes are automatically scaled back to full resolution.
+#
 detection:
-  face_conf_threshold: 0.7        # Min detection confidence (0.0-1.0)
-  # nms_threshold: 0.3            # Non-max suppression threshold
+  detector_type: scrfd            # GPU-accelerated with proper landmarks
+  face_conf_threshold: 0.5        # Min detection confidence
+  # nms_threshold: 0.4            # Non-max suppression threshold
+
+  # High-resolution optimization (KEY FOR PERFORMANCE):
+  max_detection_size: 640         # Detection at 640px for good accuracy
+  # detection_scale: 0.5          # Alternative: explicit scale factor
+
+  # Body detection and segmentation (for contour visualization)
+  body_detection: true           # Enable human body detection
+  body_conf_threshold: 0.6        # Min body detection confidence
+  segmentation: true             # Enable human segmentation for contours
+  segmentation_threshold: 0.8     # Min segmentation probability
+
+  # Contour visualization
+  contour_thickness: 1            # Thickness of body contour lines
+  contour_fill_alpha: 0.15        # Fill transparency (0=none, 1=opaque)
+
+  # Person classification (CLIP-based)
+  person_classification: true     # Enable soldier/civilian classification
+  classification_interval: 5      # Classify every N frames (reduce for performance)
+  armed_threshold: 0.6            # Min confidence for "ARMED" label (0-1, higher = stricter)
+  soldier_threshold: 0.5          # Min confidence for "IDF" label (0-1, higher = stricter)
+  clip_onnx: true                 # Use ONNX model (84MB, faster) vs PyTorch (600MB)
+  # Note: If neither threshold is met, defaults to "CIV" (unarmed civilian)
 
 # -----------------------------------------------------------------------------
 # Object Tracking (SORT-based)
 # -----------------------------------------------------------------------------
+# Optimized for fast movements and reliable CONFIRMED track maintenance
 tracking:
-  max_age: 30                     # Frames before track is deleted
-  min_hits: 3                     # Min detections to confirm track
-  iou_threshold: 0.3              # IoU threshold for matching
+  max_age: 60                     # Frames before track is deleted (increased for fast motion)
+  min_hits: 2                     # Min detections to confirm track (reduced for responsiveness)
+  iou_threshold: 0.15             # IoU threshold for matching (lowered for fast motion)
   # enable_reid: false            # Re-identification (disabled by default)
 
 # -----------------------------------------------------------------------------
 # Quality Filtering
 # -----------------------------------------------------------------------------
 # Embeddings from low-quality frames are rejected to improve accuracy.
+# KEY: Out-of-focus faces produce unreliable embeddings causing FP/FN
 quality:
-  min_face_quality: 0.3           # Min quality for processing
+  min_face_quality: 0.5           # Min quality for processing (changed from 0.3)
   min_enroll_quality: 0.8         # Min quality for enrollment photos
   min_bbox_size: 40               # Min face bounding box size (pixels)
-  blur_threshold: 100.0           # Laplacian variance threshold for blur
+  blur_threshold: 50.0            # Laplacian variance threshold (changed from 100)
 
 # -----------------------------------------------------------------------------
 # Embedding Aggregation
@@ -52,21 +94,22 @@ quality:
 fusion:
   # Temporal aggregation
   window_size: 30                 # Observation window for state machine
-  consistency_count: 12           # Consistent frames needed for decision
-  confidence_decay_threshold: 25  # Frames before confidence starts to decay
+  consistency_count: 10           # Consistent frames needed for decision (reduced)
+  confidence_decay_threshold: 40  # Frames before confidence starts to decay (increased)
 
   # Embedding aggregation (key for accuracy)
   embedding_window: 20            # Max embeddings per track
-  embedding_min: 6                # Min embeddings before matching
-  embedding_sample_interval: 2    # Sample every N frames (1=every frame)
-  embedding_quality_threshold: 0.4     # Min combined quality score
-  embedding_outlier_threshold: 0.25    # Max distance from centroid for inliers
+  embedding_min: 4                # Min embeddings before matching (reduced)
+  embedding_sample_interval: 5    # Sample every N frames (increased for FPS)
+  embedding_quality_threshold: 0.40    # Min combined quality score (increased from 0.30)
+  embedding_outlier_threshold: 0.30    # Max distance from centroid for inliers (relaxed)
 
-  # Quality score formula:
-  # combined = 0.40 × detection_conf
-  #          + 0.25 × blur_score (higher = sharper)
-  #          + 0.15 × brightness_score (optimal = 0.5)
-  #          + 0.20 × size_score (larger = better)
+  # Quality score formula (blur is most important for focus issues):
+  # combined = 0.25 × size_score (larger = better)
+  #          + 0.25 × detection_conf
+  #          + 0.50 × blur_score (higher = sharper) ← KEY for focus issues
+  #
+  # Hard cutoff: blur_metric < blur_threshold * 0.3 → quality = 0 (rejected)
 
 # -----------------------------------------------------------------------------
 # Decision Thresholds
@@ -79,11 +122,40 @@ fusion:
 #      │
 #      └──[timeout]──▶ ENEMY
 #
+# Calibrated from LOSO analysis:
+#   Known samples:   LLR 1.61-2.86 (mean 2.34), margin 0.18-1.17 (mean 0.76)
+#   Unknown samples: LLR -0.23-0.20 (mean 0.01)
+#
+# NOTE: Runtime margins can be lower than LOSO due to:
+#   - Only 2 enrolled identities with high similarity
+#   - Probe quality variations in real-time
+#   - Use high consistency to compensate for low margin
+#
 thresholds:
-  t_accept: 0.78                  # Min score for FRIENDLY (0.0-1.0)
-  t_margin: 0.20                  # Min margin between best and 2nd best
+  t_accept: 0.90                  # Min calibrated score for FRIENDLY (INCREASED to reduce FP)
+  t_margin: 0.005                 # Min margin - very low since only 2 similar identities
   t_timeout: 15.0                 # Seconds in SUSPECT before ENEMY
-  identity_switch_margin: 0.25    # Extra margin required to switch identity
+  identity_switch_margin: 0.05    # Extra margin required to switch identity
+
+  # Cumulative confidence settings (FRIENDLY → CONFIRMED)
+  # Once confirmed, system switches to tracking-only mode (no recognition)
+  # NOTE: Uses EMA formula that asymptotically approaches 1.0, so use <1.0 threshold
+  confirm_threshold: 0.95         # Cumulative confidence to enter CONFIRMED state
+  confidence_gain_rate: 0.08      # EMA rate per positive frame (faster buildup)
+  confidence_decay_rate: 0.01     # Decay rate per negative frame
+  track_lost_timeout: 5.0         # Seconds before CONFIRMED drops back to FRIENDLY (increased for fast motion)
+
+  # Track recovery (fast re-approval of lost and reappeared tracks)
+  # When a CONFIRMED/FRIENDLY track is lost, we store its embedding
+  # When a new track appears, we check if it matches a recently lost track
+  # IMPORTANT: Set high threshold to avoid false positives!
+  # Data shows: same person ~0.48-0.70+, different person ~0.22-0.27
+  track_recovery_timeout: 15.0    # Seconds to keep lost tracks for recovery
+  track_recovery_threshold: 0.75  # Cosine similarity threshold (INCREASED from 0.40)
+  active_track_matching: false    # Disable matching against currently active tracks
+
+  # Consistency can compensate for low margin:
+  # If consistency >= 2x required AND score >= t_accept, accept even with low margin
 
 # -----------------------------------------------------------------------------
 # Face Index (Database)
@@ -93,35 +165,77 @@ index:
   meta_path: data/index/meta.jsonl          # Metadata (person IDs)
 
 # -----------------------------------------------------------------------------
-# PLDA Scoring (Second Stage)
+# PLDA Scoring (Likelihood Ratio Based)
 # -----------------------------------------------------------------------------
-# PLDA provides probabilistic scoring on top of FAISS for better accuracy.
-# Enabled by default. Falls back to FAISS-only if model not found.
+# PLDA provides probabilistic scoring using log-likelihood ratios (LLR).
+# KEY INSIGHT: LLR naturally handles the "unknown" problem:
+#   - LLR > 0: More likely same person
+#   - LLR < 0: More likely different person (unknown)
+#
+# The regularization parameters are crucial for handling:
+#   - Dispersed enrollment embeddings (varied poses/quality)
+#   - Noisy probe embeddings (partial occlusion, extreme angles)
+#
+# Calibrated from LOSO analysis:
+#   Known samples:   LLR 1.61-2.86 (mean 2.34)
+#   Unknown samples: LLR -0.23-0.20 (mean 0.01)
+#   Perfect separation at LLR threshold ~0.9
 #
 plda:
   enabled: true                   # Use PLDA second stage scoring
   model_path: data/index/plda.npz # PLDA model file
-  faiss_k: 5                      # Top-K candidates from FAISS
-  llr_threshold: 2.5              # Min log-likelihood ratio
-  margin_threshold: 0.5           # Min PLDA margin
-  calibrate: true                 # Map LLR to 0-1 range
 
-  # Score blending (PLDA + FAISS):
-  # - High FAISS (≥0.75): 70% PLDA + 30% FAISS
-  # - Med FAISS (0.6-0.75): 50% PLDA + 50% FAISS
-  # - Low FAISS (<0.6): 30% PLDA + 70% FAISS
+  # Dimensionality reduction (helps with noise)
+  latent_dim: 128                 # Reduced dimensionality for stability
+
+  # Regularization (KEY for noisy embeddings)
+  # Higher values = more tolerant of pose/quality variation
+  between_class_reg: 0.1          # Shrinkage for between-class covariance
+  within_class_reg: 0.3           # Shrinkage for within-class covariance
+
+  # Decision thresholds (LLR-based, from LOSO analysis)
+  faiss_k: 5                      # Top-K candidates from FAISS
+  llr_threshold: 1.0              # Min LLR for acceptance (conservative, known min=1.61)
+  margin_threshold: 0.005         # Min LLR margin - low since 2 similar identities
+  calibrate: true                 # Map LLR to 0-1 range for display
 
 # -----------------------------------------------------------------------------
 # Models
 # -----------------------------------------------------------------------------
-# Available face embedders:
-#   - mobilefacenet.onnx  (4MB, fast, good accuracy) ← Recommended
-#   - arcface_r100.onnx   (249MB, slow, best accuracy)
-#   - adaface_r100.onnx   (249MB, slow, best accuracy)
+# Face detectors:
+#   - yunet.onnx: OpenCV YuNet (CPU only, 232KB)
+#   - ultraface_rfb320.onnx: UltraFace (GPU, fast, no landmarks, 1.2MB)
+#   - scrfd_2.5g.onnx: SCRFD (GPU, accurate landmarks, 3.1MB) ← Recommended
+#
+# Face embedders:
+#   - mobilefacenet.onnx  (4MB, fast, good accuracy)
+#   - arcface_r100.onnx   (249MB, slower, best accuracy) ← Current
+#   - adaface_r100.onnx   (249MB, slower, best accuracy)
+#
+# Body detection (optional):
+#   - yolov8n.onnx: YOLOv8 Nano (6.3MB, fast person detection)
+#   - yolov8s.onnx: YOLOv8 Small (22.5MB, more accurate)
+#
+# Human segmentation (optional):
+#   - human_seg.onnx: PP-HumanSeg Lite (2.1MB, body contours)
 #
 models:
-  face_detector: models/yunet.onnx
-  face_embedder: models/mobilefacenet.onnx
+  face_detector: models/scrfd_2.5g.onnx   # GPU with landmarks
+  #face_detector: models/ultraface_rfb320.onnx  # GPU, no landmarks
+  #face_detector: models/yunet.onnx            # CPU fallback
+  #face_embedder: models/mobilefacenet.onnx
+  face_embedder: models/arcface_r100.onnx
+
+  # Body detection and segmentation (download with: python tools/download_models.py B)
+  body_detector: models/yolov8n.onnx
+  human_segmenter: models/human_seg.onnx
+
+  # CLIP model for person classification
+  # ONNX version (recommended): 84MB, faster startup, use clip_onnx: true
+  clip_vision: models/clip_vision_int8.onnx    # INT8 quantized vision encoder
+  clip_embeddings: models/clip_text_embeddings.npy  # Pre-computed text embeddings
+  # PyTorch version (fallback): 600MB, slower startup, use clip_onnx: false
+  clip_cache: models/clip_cache   # HuggingFace cache directory
 
 # -----------------------------------------------------------------------------
 # MJPEG Streaming
@@ -137,8 +251,8 @@ stream:
 # Inference (GPU Acceleration)
 # -----------------------------------------------------------------------------
 # GPU support:
-#   - NVIDIA: pip install onnxruntime-gpu
-#   - AMD/Intel (Windows): pip install onnxruntime-directml
+#   - NVIDIA: uv pip install onnxruntime-gpu
+#   - AMD/Intel (Windows): uv pip install onnxruntime-directml
 #
 inference:
   use_gpu: true                   # Use GPU if available
@@ -150,31 +264,3 @@ inference:
 logging:
   level: INFO                     # DEBUG | INFO | WARNING | ERROR
   format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-
-# =============================================================================
-# Tuning Presets
-# =============================================================================
-#
-# FOR ACCURACY (fewer false positives):
-#   thresholds:
-#     t_accept: 0.85
-#     t_margin: 0.25
-#   fusion:
-#     embedding_min: 10
-#     consistency_count: 15
-#
-# FOR SPEED (faster recognition):
-#   thresholds:
-#     t_accept: 0.70
-#     t_margin: 0.15
-#   fusion:
-#     embedding_min: 4
-#     embedding_sample_interval: 3
-#
-# FOR ROBUSTNESS (varying conditions):
-#   fusion:
-#     embedding_window: 30
-#     embedding_outlier_threshold: 0.30
-#     embedding_quality_threshold: 0.35
-#
-# =============================================================================

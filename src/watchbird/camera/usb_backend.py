@@ -39,7 +39,15 @@ class USBCameraBackend(CameraBackend):
         """
         try:
             logger.info(f"Opening USB camera {self.device_id}...")
-            self.cap = cv2.VideoCapture(self.device_id)
+
+            # On Windows, use DirectShow (DSHOW) backend instead of MSMF
+            # MSMF has issues with some cameras (frame grab errors)
+            import platform
+            if platform.system() == 'Windows':
+                self.cap = cv2.VideoCapture(self.device_id, cv2.CAP_DSHOW)
+                logger.debug("Using DirectShow backend (Windows)")
+            else:
+                self.cap = cv2.VideoCapture(self.device_id)
 
             if not self.cap.isOpened():
                 logger.error(f"Failed to open camera device {self.device_id}")
@@ -50,6 +58,9 @@ class USBCameraBackend(CameraBackend):
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
             self.cap.set(cv2.CAP_PROP_FPS, self.fps)
 
+            # Set buffer size to 1 to reduce latency
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
             # Verify actual resolution
             actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -59,6 +70,15 @@ class USBCameraBackend(CameraBackend):
                 f"USB camera opened: {actual_width}x{actual_height} @ {actual_fps}fps "
                 f"(requested: {self.resolution[0]}x{self.resolution[1]} @ {self.fps}fps)"
             )
+
+            # Read a test frame to make sure camera is working
+            ret, test_frame = self.cap.read()
+            if not ret or test_frame is None:
+                logger.error("Camera opened but failed to read test frame")
+                self.cap.release()
+                return False
+
+            logger.debug(f"Test frame captured: {test_frame.shape}")
 
             self.is_opened = True
             return True
@@ -92,3 +112,45 @@ class USBCameraBackend(CameraBackend):
             self.cap.release()
             self.cap = None
             self.is_opened = False
+
+    def set_resolution(self, width: int, height: int) -> bool:
+        """Change camera resolution.
+
+        Args:
+            width: New width
+            height: New height
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.cap is None or not self.is_opened:
+            return False
+
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+        actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        if (actual_w, actual_h) == (width, height):
+            self.resolution = (width, height)
+            logger.info(f"Resolution changed to {width}x{height}")
+            return True
+
+        logger.warning(f"Resolution {width}x{height} not supported, got {actual_w}x{actual_h}")
+        return False
+
+    def get_actual_resolution(self) -> Tuple[int, int]:
+        """Get the actual camera resolution.
+
+        Returns:
+            (width, height) tuple
+        """
+        if self.cap is None:
+            return self.resolution
+
+        return (
+            int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        )
+

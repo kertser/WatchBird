@@ -1,4 +1,4 @@
-"""State machine for track classification."""
+"""State machine for track classification with cumulative confidence."""
 
 import logging
 import time
@@ -12,13 +12,25 @@ logger = logging.getLogger(__name__)
 
 class TrackState(Enum):
     """Track classification state."""
-    SUSPECT = "SUSPECT"
-    FRIENDLY = "FRIENDLY"
-    ENEMY = "ENEMY"
+    SUSPECT = "SUSPECT"       # Unknown, actively recognizing
+    FRIENDLY = "FRIENDLY"     # Recognized, still building confidence
+    CONFIRMED = "CONFIRMED"   # High confidence, tracking-only mode
+    ENEMY = "ENEMY"           # Timed out without recognition
 
 
 class TrackStateMachine:
-    """State machine for individual track classification."""
+    """State machine for individual track classification with cumulative confidence.
+
+    State flow:
+        SUSPECT → FRIENDLY → CONFIRMED
+           ↓         ↓          ↓
+         ENEMY    SUSPECT    FRIENDLY (if confidence drops)
+
+    CONFIRMED state:
+        - High cumulative confidence (>= confirm_threshold)
+        - Recognition stops, only tracking
+        - Track recovery if briefly lost
+    """
 
     def __init__(
         self,
@@ -29,7 +41,12 @@ class TrackStateMachine:
         consistency_count: int = 6,
         window_size: int = 10,
         confidence_decay_threshold: int = 3,
-        identity_switch_margin: float = 0.10
+        identity_switch_margin: float = 0.10,
+        # New parameters for cumulative confidence
+        confirm_threshold: float = 0.95,
+        confidence_gain_rate: float = 0.05,
+        confidence_decay_rate: float = 0.02,
+        track_lost_timeout: float = 3.0
     ):
         """Initialize track state machine.
 
@@ -42,6 +59,10 @@ class TrackStateMachine:
             window_size: Temporal aggregation window size
             confidence_decay_threshold: Number of inconsistent frames before dropping FRIENDLY
             identity_switch_margin: Extra margin required to switch to different person
+            confirm_threshold: Confidence threshold to enter CONFIRMED state (e.g., 0.95)
+            confidence_gain_rate: EMA rate for confidence gain per positive frame
+            confidence_decay_rate: Rate of confidence decay per negative frame
+            track_lost_timeout: Seconds before CONFIRMED drops to FRIENDLY if track lost
         """
         self.track_id = track_id
         self.t_accept = t_accept
@@ -51,21 +72,118 @@ class TrackStateMachine:
         self.confidence_decay_threshold = confidence_decay_threshold
         self.identity_switch_margin = identity_switch_margin
 
+        # Cumulative confidence parameters
+        self.confirm_threshold = confirm_threshold
+        self.confidence_gain_rate = confidence_gain_rate
+        self.confidence_decay_rate = confidence_decay_rate
+        self.track_lost_timeout = track_lost_timeout
+
         self.state = TrackState.SUSPECT
         self.person_id: Optional[str] = None
         self.confidence: float = 0.0
+        self.cumulative_confidence: float = 0.0  # Builds up over time
         self.start_time = time.time()
 
         # Tracks consecutive frames with inconsistent detection while FRIENDLY
         self.inconsistent_frame_count: int = 0
+
+        # Track loss tracking for CONFIRMED state
+        self.last_seen_time: float = time.time()
+        self.frames_since_seen: int = 0
 
         # Locked identity - once identified, this person is "locked in"
         # and requires much stronger evidence to switch to a different person
         self.locked_person_id: Optional[str] = None
         self.locked_confidence: float = 0.0
 
+        # Recognition skip flag for CONFIRMED state
+        self.skip_recognition: bool = False
+
+        # Recovery flag - prevents normal transitions from overwriting recovered state
+        self._recovered: bool = False
+
         self.aggregator = TemporalAggregator(window_size=window_size)
         self.modalities_used: Dict[str, float] = {}
+
+    def should_skip_recognition(self) -> bool:
+        """Check if recognition should be skipped (CONFIRMED state).
+
+        In CONFIRMED state, we only track - no embedding extraction/matching needed.
+        This saves significant CPU/GPU resources.
+
+        Returns:
+            True if recognition should be skipped
+        """
+        return self.state == TrackState.CONFIRMED and self.skip_recognition
+
+    def notify_track_seen(self) -> None:
+        """Notify that the track is still being tracked (even without recognition).
+
+        Call this every frame when the track is visible to maintain CONFIRMED state.
+        """
+        self.last_seen_time = time.time()
+        self.frames_since_seen = 0
+
+    def fast_recover(
+        self,
+        person_id: str,
+        cumulative_confidence: float,
+        min_confidence: float = 0.5
+    ) -> bool:
+        """Fast-recover a previously confirmed identity.
+
+        Called when a new track matches a recently lost CONFIRMED/FRIENDLY track.
+        Skips the full recognition process and directly enters CONFIRMED state
+        to avoid the full recognition flow.
+
+        Args:
+            person_id: The recovered person ID
+            cumulative_confidence: The cumulative confidence from the lost track
+            min_confidence: Minimum confidence to go directly to CONFIRMED
+
+        Returns:
+            True if recovery successful
+        """
+        # Mark as recovered to prevent normal transitions from overwriting
+        self._recovered = True
+
+        # Restore identity
+        self.person_id = person_id
+        self.locked_person_id = person_id
+
+        # Restore confidence (with slight reduction for safety)
+        # But ensure we reach CONFIRMED threshold to avoid going through FRIENDLY again
+        restored_cumulative = max(cumulative_confidence * 0.95, self.confirm_threshold)
+        self.cumulative_confidence = min(1.0, restored_cumulative)
+        self.confidence = max(0.8, cumulative_confidence)
+        self.locked_confidence = self.confidence
+
+        # Seed the aggregator with strong fake observations
+        # Use high scores to ensure the FRIENDLY block conditions are met
+        for _ in range(self.consistency_count + 5):
+            self.aggregator.add_observation(
+                person_id,
+                self.confidence,  # best_score
+                0.0,  # second_score (no competition = high margin)
+                0.9   # reliability
+            )
+
+        # Always go directly to CONFIRMED for recovered tracks
+        # This prevents the FRIENDLY block from potentially resetting to SUSPECT
+        self.state = TrackState.CONFIRMED
+        self.skip_recognition = True
+
+        logger.info(
+            f"Track {self.track_id} FAST RECOVERED → CONFIRMED ({person_id}, "
+            f"cumulative={self.cumulative_confidence:.2f})"
+        )
+
+        # Reset counters
+        self.inconsistent_frame_count = 0
+        self.last_seen_time = time.time()
+        self.start_time = time.time()
+
+        return True
 
     def update(
         self,
@@ -90,6 +208,10 @@ class TrackStateMachine:
         # Update modalities used
         self.modalities_used[modality] = reliability
 
+        # Track was seen
+        self.last_seen_time = time.time()
+        self.frames_since_seen = 0
+
         # Add observation to aggregator
         self.aggregator.add_observation(
             best_person_id,
@@ -108,6 +230,14 @@ class TrackStateMachine:
             True if state changed, False otherwise
         """
         if self.state == TrackState.SUSPECT:
+            # If track was recovered, don't go through normal SUSPECT flow
+            # The recovered state is already set and we should respect it
+            if self._recovered and self.person_id is not None:
+                # Already recovered, skip SUSPECT logic
+                # Clear the flag so future transitions work normally
+                self._recovered = False
+                return False
+
             # Check for FRIENDLY transition
             person_id, metrics = self.aggregator.get_aggregated_decision(
                 consistency_count=self.consistency_count
@@ -136,9 +266,24 @@ class TrackStateMachine:
                         f"requires margin {required_margin:.3f}"
                     )
 
+                # Consistency-based margin relaxation:
+                # If consistency is very high (2x required), we can trust the match even with low margin
+                # This handles cases with few enrolled identities that have similar embeddings
+                margin_ok = median_margin >= required_margin
+                if not margin_ok and consistency >= self.consistency_count * 2:
+                    # High consistency can compensate for low margin
+                    # Still require some minimal margin to avoid complete ties
+                    minimal_margin = 0.001
+                    if median_margin >= minimal_margin:
+                        margin_ok = True
+                        logger.debug(
+                            f"Track {self.track_id}: margin relaxed due to high consistency "
+                            f"({consistency} >= {self.consistency_count * 2})"
+                        )
+
                 if (
                     median_score >= self.t_accept and
-                    median_margin >= required_margin and
+                    margin_ok and
                     consistency >= self.consistency_count
                 ):
                     self.state = TrackState.FRIENDLY
@@ -149,6 +294,11 @@ class TrackStateMachine:
                     # Lock this identity
                     self.locked_person_id = person_id
                     self.locked_confidence = median_score
+
+                    # Initialize cumulative confidence if not already set (e.g., by recovery)
+                    # Start at 0% for clean 0-100% progression
+                    if self.cumulative_confidence < 0.01:
+                        self.cumulative_confidence = 0.0  # Start at 0%
 
                     logger.info(
                         f"Track {self.track_id} → FRIENDLY ({person_id}, "
@@ -189,7 +339,7 @@ class TrackStateMachine:
                 return True
 
         elif self.state == TrackState.FRIENDLY:
-            # Continue comparing faces and update confidence
+            # Continue comparing faces and accumulate confidence
             person_id, metrics = self.aggregator.get_aggregated_decision(
                 consistency_count=self.consistency_count
             )
@@ -200,30 +350,69 @@ class TrackStateMachine:
                 consistency = metrics.get("consistency", 0)
 
                 # Check if detection is still consistent with same person
+                # Apply same margin relaxation as for initial acceptance
+                margin_ok = median_margin >= self.t_margin
+                if not margin_ok and consistency >= self.consistency_count * 2:
+                    if median_margin >= 0.001:
+                        margin_ok = True
+
                 if (
                     person_id == self.person_id and
                     median_score >= self.t_accept and
-                    median_margin >= self.t_margin and
+                    margin_ok and
                     consistency >= self.consistency_count
                 ):
-                    # Continuous detection - update confidence (gain confidence)
-                    # Use exponential moving average to smoothly increase confidence
+                    # Continuous positive detection - ACCUMULATE CONFIDENCE
+                    # Use EMA to smoothly increase cumulative confidence
                     self.confidence = max(self.confidence, median_score)
+
+                    # Gain cumulative confidence with each positive frame
+                    # Formula: cumulative = cumulative + gain_rate * (1 - cumulative)
+                    # This asymptotically approaches 1.0
+                    confidence_boost = self.confidence_gain_rate * (1.0 - self.cumulative_confidence)
+                    self.cumulative_confidence = min(1.0, self.cumulative_confidence + confidence_boost)
+
                     self.inconsistent_frame_count = 0
 
                     logger.debug(
-                        f"Track {self.track_id} FRIENDLY maintained ({self.person_id}, "
-                        f"conf={self.confidence:.3f}, margin={median_margin:.3f})"
+                        f"Track {self.track_id} FRIENDLY: {self.person_id}, "
+                        f"score={self.confidence:.3f}, cumulative={self.cumulative_confidence:.3f}"
                     )
-                else:
-                    # Detection inconsistent - increment counter
-                    self.inconsistent_frame_count += 1
 
-                    logger.debug(
-                        f"Track {self.track_id} FRIENDLY inconsistent frame "
-                        f"({self.inconsistent_frame_count}/{self.confidence_decay_threshold}): "
-                        f"detected={person_id}, expected={self.person_id}"
+                    # Check for transition to CONFIRMED state
+                    if self.cumulative_confidence >= self.confirm_threshold:
+                        self.state = TrackState.CONFIRMED
+                        self.skip_recognition = True
+
+                        logger.info(
+                            f"Track {self.track_id} → CONFIRMED ({self.person_id}, "
+                            f"cumulative={self.cumulative_confidence:.3f}). "
+                            f"Switching to tracking-only mode."
+                        )
+                        return True
+                else:
+                    # Detection inconsistent - decay confidence slightly
+                    self.inconsistent_frame_count += 1
+                    self.cumulative_confidence = max(
+                        0.0,
+                        self.cumulative_confidence - self.confidence_decay_rate
                     )
+
+                    # For recovered tracks, be more lenient - allow same person with lower score
+                    if self._recovered and person_id == self.person_id:
+                        # Same person, just lower quality - don't count as inconsistent
+                        self.inconsistent_frame_count = max(0, self.inconsistent_frame_count - 1)
+                        logger.debug(
+                            f"Track {self.track_id} FRIENDLY (recovered, lenient): {person_id}, "
+                            f"score={median_score:.3f}, cumulative={self.cumulative_confidence:.3f}"
+                        )
+                    else:
+                        logger.debug(
+                            f"Track {self.track_id} FRIENDLY inconsistent frame "
+                            f"({self.inconsistent_frame_count}/{self.confidence_decay_threshold}): "
+                            f"detected={person_id}, expected={self.person_id}, "
+                            f"cumulative={self.cumulative_confidence:.3f}"
+                        )
 
                     # Check if we should degrade back to SUSPECT
                     if self.inconsistent_frame_count >= self.confidence_decay_threshold:
@@ -233,7 +422,9 @@ class TrackStateMachine:
                         self.state = TrackState.SUSPECT
                         self.person_id = None
                         self.confidence = 0.0
+                        self.cumulative_confidence = 0.0
                         self.inconsistent_frame_count = 0
+                        self._recovered = False  # Clear recovery flag
                         self.start_time = time.time()  # Reset timeout
                         self.aggregator.clear()  # Clear buffer to start fresh
 
@@ -245,6 +436,10 @@ class TrackStateMachine:
             else:
                 # No valid detection - increment inconsistent counter
                 self.inconsistent_frame_count += 1
+                self.cumulative_confidence = max(
+                    0.0,
+                    self.cumulative_confidence - self.confidence_decay_rate
+                )
 
                 if self.inconsistent_frame_count >= self.confidence_decay_threshold:
                     old_person = self.person_id
@@ -253,7 +448,9 @@ class TrackStateMachine:
                     self.state = TrackState.SUSPECT
                     self.person_id = None
                     self.confidence = 0.0
+                    self.cumulative_confidence = 0.0
                     self.inconsistent_frame_count = 0
+                    self._recovered = False  # Clear recovery flag
                     self.start_time = time.time()
                     self.aggregator.clear()
 
@@ -262,6 +459,33 @@ class TrackStateMachine:
                         f"was {old_person} conf={old_confidence:.3f})"
                     )
                     return True
+
+        elif self.state == TrackState.CONFIRMED:
+            # CONFIRMED state: High-confidence tracking-only mode
+            # We don't do recognition, just track the face
+            # If track is lost for too long, drop back to FRIENDLY
+
+            time_since_seen = time.time() - self.last_seen_time
+
+            if time_since_seen > self.track_lost_timeout:
+                # Track lost for too long - drop back to FRIENDLY to re-verify
+                self.state = TrackState.FRIENDLY
+                self.skip_recognition = False
+                self.cumulative_confidence = self.confirm_threshold * 0.8  # Keep some confidence
+
+                logger.info(
+                    f"Track {self.track_id} CONFIRMED → FRIENDLY (track lost for "
+                    f"{time_since_seen:.1f}s > {self.track_lost_timeout:.1f}s). "
+                    f"Re-enabling recognition."
+                )
+                return True
+            else:
+                # Track is being tracked - stay in CONFIRMED
+                logger.debug(
+                    f"Track {self.track_id} CONFIRMED: {self.person_id}, "
+                    f"cumulative={self.cumulative_confidence:.3f}, "
+                    f"time_since_seen={time_since_seen:.2f}s"
+                )
 
         elif self.state == TrackState.ENEMY:
             # Continue detection to avoid false positives
@@ -315,19 +539,21 @@ class TrackStateMachine:
             "state": self.state.value,
             "person_id": self.person_id,
             "confidence": self.confidence,
+            "cumulative_confidence": self.cumulative_confidence,
             "modalities_used": self.modalities_used.copy()
         }
         return event
 
     def is_terminal(self) -> bool:
-        """Check if state is terminal.
+        """Check if state is terminal (no more processing needed).
 
-        FRIENDLY is not terminal - we continue comparing faces.
-        ENEMY is not terminal - we continue detection to avoid false positives.
-        A person marked as ENEMY can still be re-identified as FRIENDLY.
+        CONFIRMED: Only needs tracking, no recognition
+        FRIENDLY: Continue recognition to build confidence
+        SUSPECT: Continue recognition
+        ENEMY: Continue to allow re-identification
 
         Returns:
-            True if in terminal state (currently always False)
+            True if recognition should stop (CONFIRMED state)
         """
-        return False  # Continue detection for all states
+        return self.state == TrackState.CONFIRMED
 

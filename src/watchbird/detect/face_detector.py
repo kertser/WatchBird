@@ -14,7 +14,8 @@ class FaceDetector:
     """Face detector using OpenCV YuNet."""
 
     def __init__(self, model_path: str, conf_threshold: float = 0.7,
-                 use_gpu: bool = True, gpu_device_id: int = 0):
+                 use_gpu: bool = True, gpu_device_id: int = 0,
+                 detection_scale: float = 1.0, max_detection_size: int = 640):
         """Initialize face detector.
 
         Args:
@@ -22,11 +23,15 @@ class FaceDetector:
             conf_threshold: Confidence threshold for detections
             use_gpu: Whether to use GPU acceleration if available
             gpu_device_id: GPU device ID to use
+            detection_scale: Scale factor for detection (0.5 = half resolution)
+            max_detection_size: Maximum dimension for detection (auto-scales larger images)
         """
         self.model_path = Path(model_path)
         self.conf_threshold = conf_threshold
         self.use_gpu = use_gpu
         self.gpu_device_id = gpu_device_id
+        self.detection_scale = detection_scale
+        self.max_detection_size = max_detection_size
         self.detector = None
         self.input_size = (320, 320)
         self.backend_used = "CPU"
@@ -92,12 +97,12 @@ class FaceDetector:
         self.backend_used = "CPU (GPU not available for YuNet)"
         logger.debug("Face detector will use CPU (no CUDA support in OpenCV)")
 
-    def detect(self, image: np.ndarray, try_rotations: bool = True) -> Tuple[List[np.ndarray], List[float], List[np.ndarray]]:
+    def detect(self, image: np.ndarray, try_rotations: bool = False) -> Tuple[List[np.ndarray], List[float], List[np.ndarray]]:
         """Detect faces in image.
 
         Args:
             image: Input image in BGR format
-            try_rotations: If True, try detecting faces in rotated images
+            try_rotations: If True, try detecting faces in rotated images (slow, disabled by default)
 
         Returns:
             Tuple of (bboxes, confidences, landmarks)
@@ -110,19 +115,43 @@ class FaceDetector:
 
         h, w = image.shape[:2]
 
-        # Update input size to match image
-        self.detector.setInputSize((w, h))
+        # Calculate optimal scale for detection
+        scale = self._calculate_detection_scale(w, h)
+
+        # Downscale image for faster detection
+        if scale < 1.0:
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            scaled_image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            scaled_image = image
+            scale = 1.0
+
+        # Update input size to match scaled image
+        self.detector.setInputSize((scaled_image.shape[1], scaled_image.shape[0]))
 
         # Try detecting in original orientation
-        bboxes, confidences, landmarks = self._detect_single(image)
+        bboxes, confidences, landmarks = self._detect_single(scaled_image)
 
-        # If no faces found and rotation is enabled, try rotated images
+        # Scale results back to original image size
+        if scale < 1.0 and len(bboxes) > 0:
+            inv_scale = 1.0 / scale
+            bboxes = [bbox * inv_scale for bbox in bboxes]
+            landmarks = [lm * inv_scale for lm in landmarks]
+
+        # If no faces found and rotation is enabled, try rotated images (expensive!)
         if len(bboxes) == 0 and try_rotations:
             for angle in [90, 180, 270]:
-                rotated = self._rotate_image(image, angle)
+                rotated = self._rotate_image(scaled_image, angle)
                 rot_bboxes, rot_confs, rot_landmarks = self._detect_single(rotated)
 
                 if len(rot_bboxes) > 0:
+                    # Scale back first
+                    if scale < 1.0:
+                        inv_scale = 1.0 / scale
+                        rot_bboxes = [bbox * inv_scale for bbox in rot_bboxes]
+                        rot_landmarks = [lm * inv_scale for lm in rot_landmarks]
+
                     # Transform bboxes back to original orientation
                     bboxes = self._transform_bboxes_back(rot_bboxes, angle, w, h)
                     # Transform landmarks back
@@ -132,6 +161,27 @@ class FaceDetector:
                     break
 
         return bboxes, confidences, landmarks
+
+    def _calculate_detection_scale(self, w: int, h: int) -> float:
+        """Calculate optimal scale factor for detection.
+
+        Args:
+            w: Image width
+            h: Image height
+
+        Returns:
+            Scale factor (0.0-1.0)
+        """
+        # Apply user-specified scale
+        scale = self.detection_scale
+
+        # Also apply max_detection_size limit
+        max_dim = max(w, h)
+        if max_dim > self.max_detection_size:
+            size_scale = self.max_detection_size / max_dim
+            scale = min(scale, size_scale)
+
+        return scale
 
     def _detect_single(self, image: np.ndarray) -> Tuple[List[np.ndarray], List[float], List[np.ndarray]]:
         """Detect faces in a single image without rotation.

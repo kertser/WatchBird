@@ -40,18 +40,34 @@ def compute_face_quality(
     conf_score = detection_conf
     metrics["conf_score"] = conf_score
 
-    # Blur score
+    # Blur score with hard cutoff
+    # blur_threshold is the "good" threshold - above this is sharp
+    # Hard cutoff at 50% of threshold - below this is unusable
     blur_metric = compute_blur_metric(face_roi)
-    blur_score = min(1.0, blur_metric / (blur_threshold * 2))
     metrics["blur_metric"] = blur_metric
+
+    hard_cutoff = blur_threshold * 0.3  # 30% of threshold = unusable
+    if blur_metric < hard_cutoff:
+        # Extremely blurry - reject completely
+        blur_score = 0.0
+    else:
+        # Score from 0 to 1 based on blur metric
+        # Use softer scaling: blur at threshold = 0.7, blur at 2x threshold = 1.0
+        blur_score = min(1.0, blur_metric / (blur_threshold * 1.5))
+
     metrics["blur_score"] = blur_score
 
     # Combined quality score (weighted average)
+    # Blur is most important for out-of-focus issues
     quality = (
-        0.3 * size_score +
-        0.3 * conf_score +
-        0.4 * blur_score
+        0.25 * size_score +
+        0.25 * conf_score +
+        0.50 * blur_score  # Increased blur weight from 0.4 to 0.5
     )
+
+    # Hard cutoff: if blur is terrible, quality is 0 regardless of other factors
+    if blur_metric < hard_cutoff:
+        quality = 0.0
 
     metrics["quality"] = quality
 

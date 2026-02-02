@@ -3,7 +3,7 @@
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -113,6 +113,7 @@ def draw_detection_boxes(
     state: str,
     person_id: Optional[str] = None,
     confidence: float = 0.0,
+    cumulative_confidence: float = 0.0,
     head_tilt: float = 0.0,
     landmarks: Optional[np.ndarray] = None
 ) -> np.ndarray:
@@ -122,9 +123,10 @@ def draw_detection_boxes(
         frame: Input frame
         track_id: Track identifier
         bbox: Bounding box [x1, y1, x2, y2]
-        state: Track state (DETECTING, SUSPECT, FRIENDLY, ENEMY)
-        person_id: Person identifier (for FRIENDLY)
+        state: Track state (DETECTING, SUSPECT, FRIENDLY, CONFIRMED, ENEMY)
+        person_id: Person identifier (for FRIENDLY/CONFIRMED)
         confidence: Confidence score
+        cumulative_confidence: Cumulative confidence (for FRIENDLY→CONFIRMED)
         head_tilt: Head tilt angle in degrees (for rotated box)
         landmarks: Optional 5x2 array of facial landmarks
 
@@ -132,9 +134,12 @@ def draw_detection_boxes(
         Annotated frame
     """
     # Color by state
-    if state == "FRIENDLY":
-        color = (0, 255, 0)  # Green
-        label = f"FRIENDLY: {person_id} ({confidence:.2f})"
+    if state == "CONFIRMED":
+        color = (0, 255, 0)  # Bright Green - high confidence, tracking only
+        label = f"CONFIRMED: {person_id}"
+    elif state == "FRIENDLY":
+        color = (0, 200, 100)  # Light green/teal - still building confidence
+        label = f"FRIENDLY: {person_id} ({cumulative_confidence:.0%})"
     elif state == "ENEMY":
         color = (0, 0, 255)  # Red
         label = f"ENEMY: Track {track_id}"
@@ -267,6 +272,199 @@ def draw_detection_boxes(
             (0, 0, 0),
             1
         )
+
+    return frame
+
+
+def draw_face_indicator(
+    frame: np.ndarray,
+    track_id: int,
+    bbox: np.ndarray,
+    state: str,
+    person_id: Optional[str] = None,
+    confidence: float = 0.0,
+    cumulative_confidence: float = 0.0,
+    head_tilt: float = 0.0,
+    landmarks: Optional[np.ndarray] = None,
+    draw_landmarks: bool = True,
+    classification: Optional[Tuple[str, float]] = None
+) -> np.ndarray:
+    """Draw elegant corner brackets around face (for use with body segmentation).
+
+    Draws rotating corner brackets that follow head tilt, like camera autofocus.
+    Provides cleaner visualization when body contours are already drawn.
+
+    Args:
+        frame: Input frame
+        track_id: Track identifier
+        bbox: Face bounding box [x1, y1, x2, y2]
+        state: Track state (DETECTING, SUSPECT, FRIENDLY, CONFIRMED, ENEMY)
+        person_id: Person identifier (for FRIENDLY/CONFIRMED)
+        confidence: Confidence score
+        cumulative_confidence: Cumulative confidence
+        head_tilt: Head tilt angle in degrees
+        landmarks: Optional 5x2 array of facial landmarks
+        draw_landmarks: Whether to draw landmark points
+        classification: Optional tuple of (person_type, confidence) from CLIP
+
+    Returns:
+        Annotated frame
+    """
+    # Color by state
+    state_colors = {
+        "CONFIRMED": (0, 255, 0),      # Bright Green
+        "FRIENDLY": (0, 200, 100),     # Light green/teal
+        "ENEMY": (0, 0, 255),          # Red
+        "DETECTING": (0, 165, 255),    # Orange
+        "SUSPECT": (0, 255, 255),      # Yellow
+    }
+    color = state_colors.get(state, (128, 128, 128))
+
+    x1, y1, x2, y2 = map(int, bbox)
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+    width = x2 - x1
+    height = y2 - y1
+
+    # Corner bracket length proportional to face size
+    corner_len = max(8, int(min(width, height) / 4))
+    thickness = 2
+
+    # Define corner points relative to center (before rotation)
+    # Each corner has two line segments forming an L-shape
+    corners = [
+        # Top-left: horizontal right, vertical down
+        ((-width/2, -height/2), ((-width/2 + corner_len, -height/2), (-width/2, -height/2 + corner_len))),
+        # Top-right: horizontal left, vertical down
+        ((width/2, -height/2), ((width/2 - corner_len, -height/2), (width/2, -height/2 + corner_len))),
+        # Bottom-left: horizontal right, vertical up
+        ((-width/2, height/2), ((-width/2 + corner_len, height/2), (-width/2, height/2 - corner_len))),
+        # Bottom-right: horizontal left, vertical up
+        ((width/2, height/2), ((width/2 - corner_len, height/2), (width/2, height/2 - corner_len))),
+    ]
+
+    # Rotation matrix
+    angle_rad = np.radians(head_tilt)
+    cos_a = np.cos(angle_rad)
+    sin_a = np.sin(angle_rad)
+
+    def rotate_point(px, py):
+        """Rotate point around center and translate to frame coords."""
+        rx = px * cos_a - py * sin_a + cx
+        ry = px * sin_a + py * cos_a + cy
+        return (int(rx), int(ry))
+
+    # Draw each corner bracket
+    for corner_origin, (end1, end2) in corners:
+        origin = rotate_point(*corner_origin)
+        point1 = rotate_point(*end1)
+        point2 = rotate_point(*end2)
+        cv2.line(frame, origin, point1, color, thickness)
+        cv2.line(frame, origin, point2, color, thickness)
+
+    # Build compact label with classification
+    # Format: "name | CIV 85%" or "name (95%) | IDF 90%"
+    if state == "CONFIRMED":
+        label = f"{person_id}"
+    elif state == "FRIENDLY":
+        label = f"{person_id} ({cumulative_confidence:.0%})"
+    elif state == "ENEMY":
+        label = "UNKNOWN"
+    elif state == "SUSPECT":
+        label = f"? ({confidence:.0%})"
+    else:  # DETECTING
+        label = "..."
+
+    # Add classification suffix if available
+    cls_label = None
+    cls_color = None
+    if classification is not None:
+        person_type, cls_conf = classification
+        # Short type labels
+        type_labels = {
+            "soldier": "IDF",
+            "armed_civilian": "ARMED",
+            "unarmed_civilian": "CIV",
+        }
+        type_colors = {
+            "soldier": (0, 180, 0),         # Green
+            "armed_civilian": (0, 0, 255),   # Red
+            "unarmed_civilian": (255, 180, 0),  # Cyan
+        }
+        cls_label = f"{type_labels.get(person_type, '?')} {cls_conf:.0%}"
+        cls_color = type_colors.get(person_type, (128, 128, 128))
+
+    # Calculate label position (above the rotated top edge)
+    label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+
+    # Top center point, rotated
+    top_center = rotate_point(0, -height/2 - 15)
+    label_x = top_center[0] - label_size[0] // 2
+    label_y = top_center[1]
+
+    # Clamp to frame bounds
+    label_x = max(0, min(label_x, frame.shape[1] - label_size[0]))
+    label_y = max(label_size[1] + 2, min(label_y, frame.shape[0]))
+
+    # Background rectangle for label
+    cv2.rectangle(
+        frame,
+        (label_x - 2, label_y - label_size[1] - 2),
+        (label_x + label_size[0] + 2, label_y + 2),
+        color,
+        -1
+    )
+
+    # Label text (black on colored background)
+    cv2.putText(
+        frame,
+        label,
+        (label_x, label_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (0, 0, 0),
+        1
+    )
+
+    # Draw classification label below the main label if available
+    if cls_label is not None and cls_color is not None:
+        cls_size, _ = cv2.getTextSize(cls_label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+        cls_x = label_x + label_size[0] // 2 - cls_size[0] // 2
+        cls_y = label_y + label_size[1] + 8
+
+        # Clamp to frame bounds
+        cls_x = max(0, min(cls_x, frame.shape[1] - cls_size[0]))
+        cls_y = min(cls_y + cls_size[1], frame.shape[0] - 2) - cls_size[1]
+
+        # Background rectangle for classification
+        cv2.rectangle(
+            frame,
+            (cls_x - 2, cls_y - cls_size[1] - 1),
+            (cls_x + cls_size[0] + 2, cls_y + 2),
+            cls_color,
+            -1
+        )
+
+        # Classification text (black on colored background)
+        cv2.putText(
+            frame,
+            cls_label,
+            (cls_x, cls_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (0, 0, 0),
+            1
+        )
+
+    # Draw facial landmarks if requested and available
+    if draw_landmarks and landmarks is not None:
+        for i, (lx, ly) in enumerate(landmarks):
+            if i < 2:  # Eyes
+                cv2.circle(frame, (int(lx), int(ly)), 2, (255, 255, 0), -1)
+            elif i == 2:  # Nose
+                cv2.circle(frame, (int(lx), int(ly)), 2, (0, 255, 255), -1)
+            else:  # Mouth corners
+                cv2.circle(frame, (int(lx), int(ly)), 1, (255, 0, 255), -1)
 
     return frame
 

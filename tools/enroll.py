@@ -3,6 +3,7 @@
 
 import argparse
 import logging
+import re
 from pathlib import Path
 from typing import List, Tuple
 
@@ -11,8 +12,10 @@ import numpy as np
 
 from watchbird.config import Config
 from watchbird.detect.face_detector import FaceDetector
+from watchbird.detect.scrfd_detector import SCRFDDetector
+from watchbird.detect.ultraface_detector import UltraFaceDetector
 from watchbird.embed.face_embedder import FaceEmbedder
-from watchbird.fusion.plda_scorer import PLDAScorer
+from watchbird.fusion.plda_scorer import PLDAScorer, PLDAConfig
 from watchbird.index.faiss_wrapper import FaissIndex
 from watchbird.index.meta_store import MetaStore
 from watchbird.utils.image_ops import extract_roi
@@ -58,6 +61,23 @@ def load_identity_images(data_dir: Path) -> List[Tuple[str, List[Path]]]:
     return identities
 
 
+def is_likely_face_crop(image: np.ndarray, max_size: int = 250) -> bool:
+    """Check if image is likely a pre-cropped face ROI.
+
+    Args:
+        image: Input image
+        max_size: Maximum dimension to consider as a face crop
+
+    Returns:
+        True if image appears to be a pre-cropped face
+    """
+    h, w = image.shape[:2]
+    # Small images with roughly square aspect ratio are likely face crops
+    max_dim = max(h, w)
+    aspect_ratio = max(h, w) / min(h, w) if min(h, w) > 0 else 999
+    return max_dim <= max_size and aspect_ratio < 2.0
+
+
 def process_enrollment(
     identities: List[Tuple[str, List[Path]]],
     face_detector: FaceDetector,
@@ -92,33 +112,47 @@ def process_enrollment(
                 logger.warning(f"  ✗ Failed to load {img_path}")
                 continue
 
+            h, w = image.shape[:2]
             logger.debug(f"  Image shape: {image.shape}")
 
-            # Detect faces
-            face_bboxes, face_confs, _ = face_detector.detect(image)
+            # Check if this is a pre-cropped face image
+            if is_likely_face_crop(image):
+                # Use the entire image as the face ROI
+                logger.info(f"  → Pre-cropped face ({w}x{h}), skipping detection")
+                face_roi = image
+                # Use a default quality based on filename if present, otherwise estimate
+                quality = 0.9  # Default high quality for pre-cropped faces
+                # Try to extract quality from filename (e.g., mike_123_01_q0.98.jpg)
+                quality_match = re.search(r'_q(\d+\.\d+)', img_path.name)
+                if quality_match:
+                    quality = float(quality_match.group(1))
+            else:
+                # Full image - need face detection
+                face_bboxes, face_confs, _ = face_detector.detect(image)
 
-            if len(face_bboxes) == 0:
-                logger.warning(f"  ✗ No face detected in {img_path.name}")
-                continue
+                if len(face_bboxes) == 0:
+                    logger.warning(f"  ✗ No face detected in {img_path.name}")
+                    continue
 
-            logger.info(f"  ✓ Detected {len(face_bboxes)} face(s)")
+                if len(face_bboxes) > 1:
+                    logger.warning(f"  ✗ Multiple faces ({len(face_bboxes)}) in {img_path.name}, skipping to avoid false enrollment")
+                    continue
 
-            if len(face_bboxes) > 1:
-                logger.warning(f"  ⚠ Multiple faces detected in {img_path.name}, using first")
+                logger.info(f"  ✓ Detected 1 face")
 
-            # Use first face
-            face_bbox = face_bboxes[0]
-            face_conf = face_confs[0]
+                # Use the single detected face
+                face_bbox = face_bboxes[0]
+                face_conf = face_confs[0]
 
-            # Extract face ROI
-            face_roi = extract_roi(image, face_bbox)
+                # Extract face ROI
+                face_roi = extract_roi(image, face_bbox)
 
-            # Compute quality
-            quality, metrics = compute_face_quality(
-                face_bbox,
-                face_roi,
-                face_conf
-            )
+                # Compute quality
+                quality, metrics = compute_face_quality(
+                    face_bbox,
+                    face_roi,
+                    face_conf
+                )
 
             if quality < min_quality:
                 logger.debug(f"Low quality face in {img_path}: {quality:.3f}")
@@ -194,12 +228,37 @@ def main() -> None:
     # Initialize components
     logger.info("Loading models...")
 
-    face_detector = FaceDetector(
-        model_path=config.models.get("face_detector"),
-        conf_threshold=config.detection["face_conf_threshold"],
-        use_gpu=config.inference.get("use_gpu", True),
-        gpu_device_id=config.inference.get("gpu_device_id", 0)
-    )
+    # Face detector - choose based on detector_type config
+    detector_type = config.detection.get("detector_type", "yunet")
+
+    if detector_type == "scrfd":
+        # SCRFD - GPU accelerated with proper landmark detection
+        face_detector = SCRFDDetector(
+            model_path=config.models.get("face_detector"),
+            conf_threshold=config.detection["face_conf_threshold"],
+            use_gpu=config.inference.get("use_gpu", True),
+            gpu_device_id=config.inference.get("gpu_device_id", 0),
+            max_detection_size=config.detection.get("max_detection_size", 640)
+        )
+    elif detector_type == "ultraface":
+        # UltraFace - GPU accelerated but no landmark detection
+        face_detector = UltraFaceDetector(
+            model_path=config.models.get("face_detector"),
+            conf_threshold=config.detection["face_conf_threshold"],
+            use_gpu=config.inference.get("use_gpu", True),
+            gpu_device_id=config.inference.get("gpu_device_id", 0),
+            max_detection_size=config.detection.get("max_detection_size", 640)
+        )
+    else:
+        # Default to YuNet (CPU-only via OpenCV)
+        face_detector = FaceDetector(
+            model_path=config.models.get("face_detector"),
+            conf_threshold=config.detection["face_conf_threshold"],
+            use_gpu=config.inference.get("use_gpu", True),
+            gpu_device_id=config.inference.get("gpu_device_id", 0),
+            detection_scale=config.detection.get("detection_scale", 1.0),
+            max_detection_size=config.detection.get("max_detection_size", 640)
+        )
 
     if not face_detector.load():
         logger.error("Failed to load face detector")
@@ -275,11 +334,17 @@ def main() -> None:
                 "Skipping PLDA training."
             )
         else:
-            plda_scorer = PLDAScorer(
+            # Get PLDA config from config file
+            plda_config = PLDAConfig(
                 embedding_dim=embeddings.shape[1],
-                plda_dim=min(128, embeddings.shape[1] // 2),
-                regularization=1e-5
+                latent_dim=config.get('plda.latent_dim', 128),
+                between_class_reg=config.get('plda.between_class_reg', 0.1),
+                within_class_reg=config.get('plda.within_class_reg', 0.3),
+                min_eigenvalue=1e-4,
+                min_samples_per_class=3
             )
+
+            plda_scorer = PLDAScorer(config=plda_config)
 
             if plda_scorer.train(embeddings, labels):
                 plda_path = config.get('plda.model_path', 'data/index/plda.npz')
@@ -287,7 +352,10 @@ def main() -> None:
                     logger.info(f"Saved PLDA model to {plda_path}")
                     logger.info(
                         f"PLDA model: {len(unique_identities)} identities, "
-                        f"{len(embeddings)} total samples"
+                        f"{len(embeddings)} total samples, "
+                        f"latent_dim={plda_config.latent_dim}, "
+                        f"between_reg={plda_config.between_class_reg}, "
+                        f"within_reg={plda_config.within_class_reg}"
                     )
                 else:
                     logger.error("Failed to save PLDA model")

@@ -34,10 +34,10 @@ View stream: `http://localhost:8080/stream`
 ```
 ┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────┐
 │  Camera  │───>│ Detector │───>│   Tracker     │───>│ Embedder │
-│  Frame   │    │  YuNet   │    │  SORT-based   │    │ ArcFace  │
+│  Frame   │    │  SCRFD   │    │  SORT-based   │    │ ArcFace  │
 └──────────┘    └──────────┘    └───────────────┘    └────┬─────┘
-                                                          │
-                                                          ▼
+                    │ GPU                                 │
+                    ▼                                     ▼
 ┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────┐
 │  Output  │<───│  State   │<───│  Aggregator   │<───│  Scorer  │
 │ FRIENDLY │    │ Machine  │    │  Multi-frame  │    │FAISS+PLDA│
@@ -46,12 +46,20 @@ View stream: `http://localhost:8080/stream`
 
 ### Key Concepts
 
-1. **Detection**: Find faces in each frame (YuNet)
+1. **Detection**: Find faces in each frame (SCRFD with GPU acceleration)
 2. **Tracking**: Assign consistent IDs across frames (SORT)
-3. **Embedding**: Extract 512-dim face vector (MobileFaceNet)
+3. **Embedding**: Extract 512-dim face vector (ArcFace/MobileFaceNet)
 4. **Aggregation**: Collect multiple embeddings, compute quality-weighted centroid
 5. **Scoring**: Match against enrolled faces (FAISS + PLDA)
 6. **State Machine**: SUSPECT → FRIENDLY/ENEMY based on confidence
+
+### Detector Options
+
+| Detector | GPU | Landmarks | Notes |
+|----------|-----|-----------|-------|
+| SCRFD | ✅ | ✅ 5-point | Recommended |
+| UltraFace | ✅ | ❌ | Fast, no landmarks |
+| YuNet | ❌ | ✅ 5-point | CPU fallback |
 
 ## Embedding Aggregation
 
@@ -97,24 +105,100 @@ Quality factors:
 | FRIENDLY | Green  | Matched enrolled person  |
 | ENEMY    | Red    | Unknown person (timeout) |
 
-## Configuration
+## Performance Tuning
 
-Key settings in `config.yaml`:
+### Auto-Resolution (Recommended)
+
+Automatically find the highest resolution that achieves your target FPS:
+
+```bash
+# Test auto-resolution tuning
+python tools/test_resolution.py --target-fps 10.0
+
+# Enable in config.yaml
+camera:
+  auto_resolution: true
+  target_fps: 10.0
+  min_fps: 8.0
+```
+
+### Manual Optimization
+
+For high-resolution cameras (1080p+):
 
 ```yaml
+detection:
+  max_detection_size: 640  # Downscale to 640px for detection (3-5x faster)
+
+camera:
+  resolution: [1280, 720]  # Manual resolution setting
+```
+
+**Expected FPS by resolution:**
+- 1920x1080 with `max_detection_size: 640` → ~8-10 FPS
+- 1280x720 with `max_detection_size: 640` → ~12-15 FPS  
+- 640x480 (no downscaling) → ~20-25 FPS
+
+## Configuration
+
+```yaml
+detection:
+  detector_type: scrfd     # scrfd (GPU) | ultraface (GPU) | yunet (CPU)
+  face_conf_threshold: 0.5 # Detection confidence threshold
+
 thresholds:
-  t_accept: 0.78       # Min score for FRIENDLY
-  t_margin: 0.20       # Min margin between candidates
+  t_accept: 0.70       # Min score for FRIENDLY
+  t_margin: 0.005      # Min margin between candidates
   t_timeout: 15.0      # Seconds before ENEMY
 
 fusion:
   embedding_window: 20      # Embeddings to collect
-  embedding_min: 6          # Min before matching
-  consistency_count: 12     # Consistent frames needed
+  embedding_min: 4          # Min before matching
+  consistency_count: 10     # Consistent frames needed
 
 models:
-  face_embedder: models/mobilefacenet.onnx
+  face_detector: models/scrfd_2.5g.onnx    # GPU + landmarks
+  face_embedder: models/arcface_r100.onnx  # Best accuracy
 ```
+
+## Body Detection & Classification (Optional)
+
+Enhance visualization with colored body contours and person classification:
+
+```bash
+# Download body models
+python tools/download_models.py
+# Select 'B' for body detection + segmentation
+# CLIP model downloads automatically on first run (~600MB)
+```
+
+Enable in `config.yaml`:
+```yaml
+detection:
+  body_detection: true
+  segmentation: true
+  person_classification: true     # CLIP-based soldier/civilian detection
+  classification_interval: 5      # Classify every N frames
+
+models:
+  body_detector: models/yolov8n.onnx
+  human_segmenter: models/human_seg.onnx
+  clip_cache: models/clip_cache   # CLIP model cache
+```
+
+**Contour Colors (Recognition State):**
+- 🟢 **Green** = CONFIRMED (high confidence)
+- 🟢 **Light Green** = FRIENDLY (building confidence)
+- 🔴 **Red** = ENEMY (unknown)
+- 🟠 **Orange** = DETECTING (initial)
+- 🟡 **Yellow** = SUSPECT (evaluating)
+
+**Classification Labels (CLIP):**
+- **IDF** = Soldier (military uniform) - Green
+- **ARMED** = Armed civilian (threat) - Red
+- **CIV** = Unarmed civilian - Cyan
+
+See [docs/BodyDetection.md](docs/BodyDetection.md) for details.
 
 ## Tools
 
