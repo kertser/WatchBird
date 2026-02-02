@@ -1,6 +1,6 @@
-# Body Detection and Segmentation Guide
+# Body Detection, Segmentation & Classification Guide
 
-WatchBird supports optional human body detection and segmentation for enhanced visualization. Body contours are colored by recognition state, providing a clear visual indicator of who has been identified.
+WatchBird supports optional human body detection, segmentation, and CLIP-based person classification for enhanced visualization and threat assessment.
 
 ## Features
 
@@ -11,14 +11,30 @@ WatchBird supports optional human body detection and segmentation for enhanced v
 - Supports multiple detection model sizes (nano, small)
 
 ### 2. Human Segmentation
-- Extracts precise body silhouettes using segmentation models
+- Extracts precise body silhouettes using PP-HumanSeg
 - Draws colored contours around detected persons
-- Contour color indicates recognition state:
-  - **Green** (CONFIRMED): High confidence, recognized friendly
-  - **Light Green/Teal** (FRIENDLY): Building confidence
-  - **Red** (ENEMY): Unknown person or timeout
-  - **Orange** (DETECTING): Initial detection phase
-  - **Yellow** (SUSPECT): Under evaluation
+- Contour color indicates recognition or classification state
+
+### 3. Person Classification (CLIP)
+- Zero-shot classification using OpenAI CLIP model
+- Classifies persons as:
+  - **IDF Soldier** (green) - Military uniform detected
+  - **Armed Civilian** (red) - Civilian with visible weapon
+  - **Unarmed Civilian** (cyan) - Regular civilian
+- GPU-accelerated via DirectML/CUDA/PyTorch
+- Classification label displayed near face indicator
+
+### State Colors (Face Recognition)
+- **Green** (CONFIRMED): High confidence, recognized friendly
+- **Light Green/Teal** (FRIENDLY): Building confidence
+- **Red** (ENEMY): Unknown person or timeout
+- **Orange** (DETECTING): Initial detection phase
+- **Yellow** (SUSPECT): Under evaluation
+
+### Classification Colors (CLIP)
+- **Green** (IDF): Military uniform/soldier
+- **Red** (ARMED): Armed civilian (threat)
+- **Cyan** (CIV): Unarmed civilian
 
 ## Setup
 
@@ -47,18 +63,23 @@ detection:
   
   # Body detection and segmentation
   body_detection: true            # Enable human body detection
-  body_conf_threshold: 0.5        # Min body detection confidence
+  body_conf_threshold: 0.6        # Min body detection confidence
   segmentation: true              # Enable human segmentation
-  segmentation_threshold: 0.5     # Min segmentation probability
+  segmentation_threshold: 0.8     # Min segmentation probability
   
   # Contour visualization
-  contour_thickness: 3            # Thickness of body contour lines
+  contour_thickness: 1            # Thickness of body contour lines
   contour_fill_alpha: 0.15        # Fill transparency (0-1)
+
+  # Person classification (CLIP-based)
+  person_classification: true     # Enable soldier/civilian classification
+  classification_interval: 5      # Classify every N frames
 
 models:
   # ... existing models ...
   body_detector: models/yolov8n.onnx
   human_segmenter: models/human_seg.onnx
+  clip_cache: models/clip_cache   # CLIP model cache (~600MB)
 ```
 
 ### 3. Run
@@ -89,11 +110,14 @@ The MJPEG stream at `http://localhost:8080/stream` will show colored body contou
 
 ### FPS Impact
 
-Body detection and segmentation add computational overhead:
+Body detection, segmentation, and classification add computational overhead:
 
-- **Face-only** (baseline): ~15-20 FPS @ 640x480
-- **Face + Body Detection**: ~12-15 FPS @ 640x480
-- **Face + Body + Segmentation**: ~8-12 FPS @ 640x480
+| Configuration | Typical FPS @ 640x480 |
+|---------------|----------------------|
+| Face-only (baseline) | ~15-20 FPS |
+| Face + Body Detection | ~12-15 FPS |
+| Face + Body + Segmentation | ~10-13 FPS |
+| Face + Body + Seg + CLIP | ~8-12 FPS |
 
 ### Optimization Tips
 
@@ -256,11 +280,47 @@ annotated = draw_body_contour_by_state(
 )
 ```
 
+### PersonClassifier (CLIP)
+
+```python
+from watchbird.detect.person_classifier import PersonClassifier
+
+classifier = PersonClassifier(
+    cache_dir="models/clip_cache"  # Local model cache
+)
+classifier.load()
+
+# Classify a single person crop
+person_type, confidence = classifier.classify(body_crop)
+# Returns: ("soldier" | "armed_civilian" | "unarmed_civilian", 0.0-1.0)
+
+# Batch classification (more efficient)
+results = classifier.classify_batch([crop1, crop2, crop3])
+# Returns: [("unarmed_civilian", 0.85), ("soldier", 0.72), ...]
+```
+
+#### Classification Categories
+
+| Category | Description | Color |
+|----------|-------------|-------|
+| `soldier` | Military uniform (IDF OD green) | Green |
+| `armed_civilian` | Civilian with visible weapon | Red |
+| `unarmed_civilian` | Regular civilian, no weapons | Cyan |
+
+#### CLIP Model Details
+
+- **Model**: OpenAI CLIP ViT-B/32
+- **Size**: ~600MB (cached locally)
+- **Backend**: PyTorch with DirectML/CUDA GPU support
+- **First Run**: Downloads from HuggingFace (one-time)
+
 ## Future Enhancements
 
 Planned improvements:
+- [x] CLIP-based person classification (soldier/civilian)
 - [ ] Pose estimation for gesture recognition
 - [ ] Multi-person segmentation with instance IDs
 - [ ] Body re-identification (match bodies across frames)
 - [ ] Skeleton tracking for activity recognition
 - [ ] Gait analysis for identity verification
+- [ ] Weapon detection model (dedicated YOLO)

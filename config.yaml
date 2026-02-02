@@ -54,6 +54,10 @@ detection:
   contour_thickness: 1            # Thickness of body contour lines
   contour_fill_alpha: 0.15        # Fill transparency (0=none, 1=opaque)
 
+  # Person classification (CLIP-based)
+  person_classification: true     # Enable soldier/civilian classification
+  classification_interval: 5      # Classify every N frames (reduce for performance)
+
 # -----------------------------------------------------------------------------
 # Object Tracking (SORT-based)
 # -----------------------------------------------------------------------------
@@ -221,6 +225,9 @@ models:
   # Body detection and segmentation (download with: python tools/download_models.py B)
   body_detector: models/yolov8n.onnx
   human_segmenter: models/human_seg.onnx
+
+  # CLIP model for person classification (auto-downloaded from HuggingFace)
+  clip_cache: models/clip_cache   # Local cache directory for CLIP model (~600MB)
 
 # -----------------------------------------------------------------------------
 # MJPEG Streaming

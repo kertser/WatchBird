@@ -161,14 +161,15 @@ models:
   face_embedder: models/arcface_r100.onnx  # Best accuracy
 ```
 
-## Body Detection & Segmentation (Optional)
+## Body Detection & Classification (Optional)
 
-Enhance visualization with colored body contours:
+Enhance visualization with colored body contours and person classification:
 
 ```bash
 # Download body models
 python tools/download_models.py
 # Select 'B' for body detection + segmentation
+# CLIP model downloads automatically on first run (~600MB)
 ```
 
 Enable in `config.yaml`:
@@ -176,20 +177,26 @@ Enable in `config.yaml`:
 detection:
   body_detection: true
   segmentation: true
-  contour_thickness: 3
-  contour_fill_alpha: 0.15
+  person_classification: true     # CLIP-based soldier/civilian detection
+  classification_interval: 5      # Classify every N frames
 
 models:
   body_detector: models/yolov8n.onnx
   human_segmenter: models/human_seg.onnx
+  clip_cache: models/clip_cache   # CLIP model cache
 ```
 
-**Contour Colors by State:**
+**Contour Colors (Recognition State):**
 - 🟢 **Green** = CONFIRMED (high confidence)
 - 🟢 **Light Green** = FRIENDLY (building confidence)
 - 🔴 **Red** = ENEMY (unknown)
 - 🟠 **Orange** = DETECTING (initial)
 - 🟡 **Yellow** = SUSPECT (evaluating)
+
+**Classification Labels (CLIP):**
+- **IDF** = Soldier (military uniform) - Green
+- **ARMED** = Armed civilian (threat) - Red
+- **CIV** = Unarmed civilian - Cyan
 
 See [docs/BodyDetection.md](docs/BodyDetection.md) for details.
 

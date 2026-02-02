@@ -3,7 +3,7 @@
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -286,7 +286,8 @@ def draw_face_indicator(
     cumulative_confidence: float = 0.0,
     head_tilt: float = 0.0,
     landmarks: Optional[np.ndarray] = None,
-    draw_landmarks: bool = True
+    draw_landmarks: bool = True,
+    classification: Optional[Tuple[str, float]] = None
 ) -> np.ndarray:
     """Draw elegant corner brackets around face (for use with body segmentation).
 
@@ -304,6 +305,7 @@ def draw_face_indicator(
         head_tilt: Head tilt angle in degrees
         landmarks: Optional 5x2 array of facial landmarks
         draw_landmarks: Whether to draw landmark points
+        classification: Optional tuple of (person_type, confidence) from CLIP
 
     Returns:
         Annotated frame
@@ -360,7 +362,8 @@ def draw_face_indicator(
         cv2.line(frame, origin, point1, color, thickness)
         cv2.line(frame, origin, point2, color, thickness)
 
-    # Build compact label
+    # Build compact label with classification
+    # Format: "name | CIV 85%" or "name (95%) | IDF 90%"
     if state == "CONFIRMED":
         label = f"{person_id}"
     elif state == "FRIENDLY":
@@ -371,6 +374,25 @@ def draw_face_indicator(
         label = f"? ({confidence:.0%})"
     else:  # DETECTING
         label = "..."
+
+    # Add classification suffix if available
+    cls_label = None
+    cls_color = None
+    if classification is not None:
+        person_type, cls_conf = classification
+        # Short type labels
+        type_labels = {
+            "soldier": "IDF",
+            "armed_civilian": "ARMED",
+            "unarmed_civilian": "CIV",
+        }
+        type_colors = {
+            "soldier": (0, 180, 0),         # Green
+            "armed_civilian": (0, 0, 255),   # Red
+            "unarmed_civilian": (255, 180, 0),  # Cyan
+        }
+        cls_label = f"{type_labels.get(person_type, '?')} {cls_conf:.0%}"
+        cls_color = type_colors.get(person_type, (128, 128, 128))
 
     # Calculate label position (above the rotated top edge)
     label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
@@ -403,6 +425,36 @@ def draw_face_indicator(
         (0, 0, 0),
         1
     )
+
+    # Draw classification label below the main label if available
+    if cls_label is not None and cls_color is not None:
+        cls_size, _ = cv2.getTextSize(cls_label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+        cls_x = label_x + label_size[0] // 2 - cls_size[0] // 2
+        cls_y = label_y + label_size[1] + 8
+
+        # Clamp to frame bounds
+        cls_x = max(0, min(cls_x, frame.shape[1] - cls_size[0]))
+        cls_y = min(cls_y + cls_size[1], frame.shape[0] - 2) - cls_size[1]
+
+        # Background rectangle for classification
+        cv2.rectangle(
+            frame,
+            (cls_x - 2, cls_y - cls_size[1] - 1),
+            (cls_x + cls_size[0] + 2, cls_y + 2),
+            cls_color,
+            -1
+        )
+
+        # Classification text (black on colored background)
+        cv2.putText(
+            frame,
+            cls_label,
+            (cls_x, cls_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (0, 0, 0),
+            1
+        )
 
     # Draw facial landmarks if requested and available
     if draw_landmarks and landmarks is not None:

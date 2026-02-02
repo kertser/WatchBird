@@ -16,18 +16,30 @@ camera:
 
 ```yaml
 detection:
-  detector_type: scrfd      # scrfd | ultraface | yunet
+  detector_type: scrfd      # scrfd (GPU with landmarks)
   face_conf_threshold: 0.5  # Min confidence (0-1)
   max_detection_size: 640   # Max image dimension for detection
+  
+  # Body detection and segmentation
+  body_detection: true      # Enable YOLOv8 body detection
+  body_conf_threshold: 0.6  # Min body detection confidence
+  segmentation: true        # Enable PP-HumanSeg contours
+  segmentation_threshold: 0.8  # Min segmentation probability
+  
+  # Contour visualization
+  contour_thickness: 1      # Line thickness
+  contour_fill_alpha: 0.15  # Fill transparency (0-1)
+  
+  # Person classification (CLIP-based)
+  person_classification: true   # Enable soldier/civilian detection
+  classification_interval: 5    # Classify every N frames
 ```
 
-### Detector Options
+### Face Detector
 
 | Detector | Backend | Landmarks | Speed | Accuracy |
 |----------|---------|-----------|-------|----------|
 | `scrfd` | GPU (DirectML/CUDA) | ✅ 5-point | Fast | Best |
-| `ultraface` | GPU (DirectML/CUDA) | ❌ None | Fastest | Good |
-| `yunet` | CPU only | ✅ 5-point | Medium | Good |
 
 **Recommendation**: Use `scrfd` for best accuracy with GPU acceleration and proper facial landmarks.
 
@@ -120,27 +132,46 @@ plda:
 
 ```yaml
 models:
-  face_detector: models/scrfd_2.5g.onnx     # Recommended (GPU + landmarks)
+  # Face recognition
+  face_detector: models/scrfd_2.5g.onnx     # GPU + landmarks
   face_embedder: models/arcface_r100.onnx   # Best accuracy
+  
+  # Body detection and segmentation
+  body_detector: models/yolov8n.onnx        # Person detection
+  human_segmenter: models/human_seg.onnx    # Body contours
+  
+  # CLIP classifier
+  clip_cache: models/clip_cache             # Local cache (~600MB)
 ```
 
-### Available Detectors
+### Face Detector
 
 | Model | Backend | Landmarks | Size | Notes |
 |-------|---------|-----------|------|-------|
 | `scrfd_2.5g.onnx` | GPU | ✅ Yes | 3.1MB | Recommended |
-| `ultraface_rfb320.onnx` | GPU | ❌ No | 1.2MB | Fast, no landmarks |
-| `yunet.onnx` | CPU | ✅ Yes | 232KB | OpenCV fallback |
 
-Download SCRFD models from: https://github.com/yakhyo/facial-analysis/releases
-
-### Available Embedders
+### Face Embedder
 
 | Model | Speed | Accuracy | Size |
 |-------|-------|----------|------|
 | `mobilefacenet.onnx` | Fast | Good | 4MB |
 | `arcface_r100.onnx` | Slow | Best | 249MB |
 | `adaface_r100.onnx` | Slow | Best | 249MB |
+
+### Body Detection
+
+| Model | Backend | Size | Notes |
+|-------|---------|------|-------|
+| `yolov8n.onnx` | GPU | 6.3MB | Nano - fast, recommended |
+| `human_seg.onnx` | GPU | 2.1MB | PP-HumanSeg Lite |
+
+### CLIP Classifier
+
+| Model | Backend | Size | Notes |
+|-------|---------|------|-------|
+| OpenAI CLIP ViT-B/32 | PyTorch + DirectML | ~600MB | Auto-downloaded |
+
+Categories: `soldier` (IDF), `armed_civilian` (threat), `unarmed_civilian`
 
 ## Inference
 

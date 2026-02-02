@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Dict, Optional
 
+import cv2
 import numpy as np
 
 from watchbird.camera.usb_backend import USBCameraBackend
@@ -20,6 +21,7 @@ from watchbird.detect.ultraface_detector import UltraFaceDetector
 from watchbird.detect.scrfd_detector import SCRFDDetector
 from watchbird.detect.body_detector import BodyDetector
 from watchbird.detect.human_segmenter import HumanSegmenter, draw_body_contour_by_state
+from watchbird.detect.person_classifier import PersonClassifier, get_person_type_color, get_person_type_label
 from watchbird.embed.face_embedder import FaceEmbedder
 from watchbird.fusion.embedding_aggregator import TrackEmbeddingManager
 from watchbird.fusion.similarity import SimilarityFusion
@@ -33,6 +35,12 @@ from watchbird.track.tracker import Tracker
 from watchbird.utils.image_ops import extract_roi
 from watchbird.utils.quality import compute_face_quality
 from watchbird.utils.resolution_tuner import find_optimal_resolution
+
+# Suppress noisy third-party logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+logging.getLogger("transformers").setLevel(logging.WARNING)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -103,6 +111,13 @@ class RecognitionPipeline:
         self.human_segmenter = None
         self.body_detection_enabled = False
         self.segmentation_enabled = False
+
+        # Person classification (CLIP-based)
+        self.person_classifier = None
+        self.classification_enabled = False
+        self.classification_interval = 5
+        self.track_classifications: Dict[int, tuple] = {}  # track_id -> (person_type, confidence)
+        self.frame_count = 0  # Frame counter for classification interval
 
         # Track state machines
         self.track_states: Dict[int, TrackStateMachine] = {}
@@ -350,6 +365,20 @@ class RecognitionPipeline:
                 logger.warning("Human segmenter not loaded - segmentation disabled")
                 self.segmentation_enabled = False
                 self.human_segmenter = None
+
+        # Person classification (CLIP-based soldier/civilian detection)
+        self.classification_enabled = self.config.detection.get("person_classification", False)
+        self.classification_interval = self.config.detection.get("classification_interval", 5)
+
+        if self.classification_enabled:
+            clip_cache_dir = self.config.models.get("clip_cache", "models/clip_cache")
+            self.person_classifier = PersonClassifier(cache_dir=clip_cache_dir)
+            if self.person_classifier.load():
+                logger.info(f"Person classification enabled (interval={self.classification_interval})")
+            else:
+                logger.warning("Person classifier not loaded - classification disabled")
+                self.classification_enabled = False
+                self.person_classifier = None
 
         # Load track recovery config
         self.track_recovery_timeout = self.config.thresholds.get("track_recovery_timeout", 10.0)
@@ -627,6 +656,9 @@ class RecognitionPipeline:
         Returns:
             Annotated frame
         """
+        # Increment frame counter (used for classification interval)
+        self.frame_count += 1
+
         # Detect faces (for MVP, we'll use faces as "persons")
         face_bboxes, face_confs, face_landmarks = self.face_detector.detect(frame)
 
@@ -887,6 +919,34 @@ class RecognitionPipeline:
         if self.body_detection_enabled and self.body_detector is not None:
             body_bboxes, body_confs = self.body_detector.detect(frame)
 
+        # Person classification (CLIP-based soldier/civilian detection)
+        if self.classification_enabled and self.person_classifier is not None and len(body_bboxes) > 0:
+            # Only classify every N frames for performance
+            if self.frame_count % self.classification_interval == 0:
+                # Extract body crops for classification
+                body_crops = []
+                for bbox in body_bboxes:
+                    x1, y1, x2, y2 = map(int, bbox[:4])
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
+                    if x2 > x1 and y2 > y1:
+                        body_crops.append(frame[y1:y2, x1:x2])
+                    else:
+                        body_crops.append(None)
+
+                # Batch classification
+                body_classifications = self.person_classifier.classify_batch(body_crops)
+
+                # Update track classifications based on face-body matching
+                for i, (person_type, conf) in enumerate(body_classifications):
+                    for track in tracks:
+                        if track.time_since_update > 0:
+                            continue
+                        match_idx = self.body_detector.match_face_to_body(track.bbox, body_bboxes)
+                        if match_idx == i:
+                            self.track_classifications[track.track_id] = (person_type, conf)
+                            break
+
         # Segmentation for body contours
         if self.segmentation_enabled and self.human_segmenter is not None:
             # If we have body detections, segment each detected body
@@ -899,6 +959,7 @@ class RecognitionPipeline:
                 for i, body_bbox in enumerate(body_bboxes):
                     # Find best matching face for this body
                     matched_state = "DETECTING"  # Default state
+                    matched_track_id = None
                     for track in tracks:
                         if track.time_since_update > 0:
                             continue
@@ -907,6 +968,7 @@ class RecognitionPipeline:
                         )
                         if match_idx == i:
                             # Face matches this body
+                            matched_track_id = track.track_id
                             if track.track_id in self.track_states:
                                 matched_state = self.track_states[track.track_id].state.value
                             break
@@ -914,14 +976,37 @@ class RecognitionPipeline:
                     # Segment this body region
                     body_mask = self.human_segmenter.segment_roi(frame, body_bbox)
 
-                    # Draw colored contour based on state
-                    annotated_frame = draw_body_contour_by_state(
-                        annotated_frame,
-                        body_mask,
-                        matched_state,
-                        contour_thickness=contour_thickness,
-                        fill_alpha=fill_alpha
-                    )
+                    # Determine contour color - use classification if available
+                    person_type = None
+                    cls_conf = 0.0
+
+                    # Check if we have a cached classification for this body's matched track
+                    if self.classification_enabled and matched_track_id is not None:
+                        if matched_track_id in self.track_classifications:
+                            person_type, cls_conf = self.track_classifications[matched_track_id]
+
+                    if person_type is not None:
+                        contour_color = get_person_type_color(person_type)
+
+                        # Draw contour with classification color
+                        from watchbird.detect.human_segmenter import draw_segmentation_overlay
+                        annotated_frame = draw_segmentation_overlay(
+                            annotated_frame,
+                            body_mask,
+                            color=contour_color,
+                            contour_thickness=contour_thickness,
+                            fill_alpha=fill_alpha
+                        )
+                        # Classification label is drawn by draw_face_indicator near the face
+                    else:
+                        # Draw colored contour based on face recognition state
+                        annotated_frame = draw_body_contour_by_state(
+                            annotated_frame,
+                            body_mask,
+                            matched_state,
+                            contour_thickness=contour_thickness,
+                            fill_alpha=fill_alpha
+                        )
             else:
                 # No body detection, segment entire frame
                 full_mask = self.human_segmenter.segment(frame)
@@ -959,6 +1044,9 @@ class RecognitionPipeline:
             if track_id in self.track_states:
                 state_machine = self.track_states[track_id]
 
+                # Get classification for this track if available
+                track_classification = self.track_classifications.get(track_id)
+
                 if use_face_indicator:
                     # Elegant rotating corner brackets - body contour already drawn
                     annotated_frame = draw_face_indicator(
@@ -971,7 +1059,8 @@ class RecognitionPipeline:
                         cumulative_confidence=state_machine.cumulative_confidence,
                         head_tilt=track.head_tilt,
                         landmarks=track.landmarks,
-                        draw_landmarks=True
+                        draw_landmarks=True,
+                        classification=track_classification
                     )
                 else:
                     # Full bounding box with rotated label support

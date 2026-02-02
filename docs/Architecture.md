@@ -11,16 +11,14 @@
 │  │ Camera  │──>│Face Det. │──>│ Tracker │──>│ Embedder │──>│Aggregator │    │
 │  └────┬────┘   └──────────┘   └─────────┘   └──────────┘   └─────┬─────┘    │
 │       │                                                           │          │
-│       │        ┌──────────┐   ┌──────────┐                       ▼          │
-│       └───────>│Body Det. │──>│Segmenter │         ┌────────────────────┐    │
-│                └──────────┘   └────┬─────┘         │  Unified Scorer    │    │
-│                                    │               │ ┌──────┐  ┌─────┐  │    │
-│                                    │               │ │FAISS │─>│PLDA │  │    │
-│                                    │               │ └──────┘  └─────┘  │    │
-│                                    │               └─────────┬──────────┘    │
-│  ┌─────────┐   ┌──────────┐       │                         │               │
-│  │ Output  │<──│  State   │<──────┴─────────────────────────┘               │
-│  │ Stream  │   │ Machine  │  (colored contours by state)                    │
+│       │        ┌──────────┐   ┌──────────┐   ┌──────────┐        ▼          │
+│       └───────>│Body Det. │──>│Segmenter │──>│  CLIP    │  ┌───────────┐    │
+│                └──────────┘   └────┬─────┘   │Classifier│  │  Scorer   │    │
+│                                    │         └────┬─────┘  │FAISS+PLDA │    │
+│                                    │              │        └─────┬─────┘    │
+│  ┌─────────┐   ┌──────────┐       │              │              │          │
+│  │ Output  │<──│  State   │<──────┴──────────────┴──────────────┘          │
+│  │ Stream  │   │ Machine  │  (colored contours + classification labels)    │
 │  └─────────┘   └──────────┘                                                 │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -35,66 +33,57 @@ USB Camera ──┐
 PiCamera2 ───┘
 ```
 
-### 2. Face Detector (SCRFD/YuNet/UltraFace)
+### 2. Face Detector (SCRFD)
 ```
 Frame ──▶ Detector ──▶ [bbox, confidence, landmarks]
                 │              │
                 │              ▼
                 │    Filter: confidence > 0.5
                 │
-                ├── SCRFD (GPU, accurate landmarks) ← Recommended
-                ├── UltraFace (GPU, fast, no landmarks)
-                └── YuNet (CPU only, OpenCV)
+                └── SCRFD (DirectML GPU, accurate 5-point landmarks)
 ```
 
-### 2b. Body Detector (Optional - YOLOv8)
+### 2b. Body Detector (YOLOv8)
 ```
 Frame ──▶ YOLOv8 ──▶ [body_bbox, confidence]
                 │              │
                 │              ▼
                 │    Filter: class=person, confidence > 0.5
                 │
-                ├── YOLOv8n (Nano - 6.3MB, fast)
-                └── YOLOv8s (Small - 22.5MB, accurate)
+                └── YOLOv8n (Nano - 6.3MB, DirectML GPU)
                 
 Body-to-Face Matching:
   - Spatial heuristics (face in upper 40% of body)
   - Horizontal alignment (face centered on body)
 ```
 
-### 2c. Human Segmenter (Optional)
+### 2c. Human Segmenter (PP-HumanSeg)
 ```
-Frame/ROI ──▶ Segmenter ──▶ Binary Mask ──▶ Contours
-                  │                            │
-                  │                            ▼
-                  │              ┌─────────────────────────┐
-                  │              │ Colored by State:       │
-                  │              │ • CONFIRMED → Green     │
-                  │              │ • FRIENDLY → Light Green│
-                  │              │ • ENEMY → Red           │
-                  │              │ • DETECTING → Orange    │
-                  │              │ • SUSPECT → Yellow      │
-                  │              └─────────────────────────┘
-                  │
-                  ├── PP-HumanSeg (2.1MB, fast)
-                  └── YOLOv8-seg (segmentation variant)
+Body ROI ──▶ Segmenter ──▶ Binary Mask ──▶ Contours
+                │                              │
+                │                              ▼
+                │              ┌─────────────────────────┐
+                │              │ Colored by:             │
+                │              │ • Recognition State     │
+                │              │ • CLIP Classification   │
+                │              └─────────────────────────┘
+                │
+                └── PP-HumanSeg Lite (2.1MB, DirectML GPU)
 ```
 
-### 3. Tracker (SORT-based)
+### 2d. Person Classifier (CLIP)
 ```
-Detections ──▶ Hungarian Matching ──▶ Track IDs
-                     │
-                     ▼
-              Track = {id, bbox, age, hits}
-```
-
-### 4. Face Embedder
-```
-Face ROI ──▶ Preprocess ──▶ Model ──▶ 512-dim vector
-             (112x112)      │
-                            ├── MobileFaceNet (fastest)
-                            ├── ArcFace R100 (accurate)
-                            └── AdaFace R100 (balanced)
+Body Crop ──▶ CLIP ──▶ [soldier | armed_civilian | unarmed_civilian]
+               │                    │
+               │                    ▼
+               │        ┌─────────────────────────┐
+               │        │ Display Labels:          │
+               │        │ • IDF 85%  → Green      │
+               │        │ • ARMED 72% → Red       │
+               │        │ • CIV 63%  → Cyan       │
+               │        └─────────────────────────┘
+               │
+               └── OpenAI CLIP ViT-B/32 (PyTorch + DirectML)
 ```
 
 ### 5. Embedding Aggregator
