@@ -1,15 +1,25 @@
 # WatchBird
 
-Real-time face recognition for embedded devices.
+Real-time face recognition and person classification for embedded devices.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         WatchBird                               │
 │                                                                 │
 │   Camera → Detect → Track → Recognize → FRIENDLY/ENEMY          │
-│                                                                 │
+│                     ↓                                           │
+│              Body Detection → Segmentation → Classification     │
+│                                              (IDF/ARMED/CIV)    │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+## Features
+
+- **Face Recognition**: SCRFD detection + ArcFace embeddings + PLDA scoring
+- **Body Detection**: YOLOv8 human detection with colored contours
+- **Person Classification**: CLIP-based soldier/armed/civilian detection
+- **GPU Accelerated**: DirectML (AMD/Intel) and CUDA (NVIDIA) support
+- **Real-time Streaming**: MJPEG stream at `http://localhost:8080/stream`
 
 ## Quick Start
 
@@ -19,6 +29,9 @@ git clone <repo> && cd WatchBird
 python -m venv .venv && .venv\Scripts\activate  # Windows
 pip install -e .
 python tools/download_models.py
+
+# Export CLIP to ONNX (optional, for person classification)
+python tools/export_clip_onnx.py
 
 # Enroll a person
 python tools/auto_enroll.py --person mike --auto-enroll
@@ -35,51 +48,38 @@ View stream: `http://localhost:8080/stream`
 ┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────┐
 │  Camera  │───>│ Detector │───>│   Tracker     │───>│ Embedder │
 │  Frame   │    │  SCRFD   │    │  SORT-based   │    │ ArcFace  │
-└──────────┘    └──────────┘    └───────────────┘    └────┬─────┘
-                    │ GPU                                 │
-                    ▼                                     ▼
-┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────┐
-│  Output  │<───│  State   │<───│  Aggregator   │<───│  Scorer  │
-│ FRIENDLY │    │ Machine  │    │  Multi-frame  │    │FAISS+PLDA│
-└──────────┘    └──────────┘    └───────────────┘    └──────────┘
+└────┬─────┘    └──────────┘    └───────────────┘    └────┬─────┘
+     │              │ GPU                                 │
+     │              ▼                                     ▼
+     │         ┌──────────┐    ┌───────────────┐    ┌──────────┐
+     │         │  Body    │    │  Aggregator   │<───│  Scorer  │
+     │         │ YOLOv8   │    │  Multi-frame  │    │FAISS+PLDA│
+     │         └────┬─────┘    └───────┬───────┘    └──────────┘
+     │              │                  │
+     ▼              ▼                  ▼
+┌──────────┐   ┌───────────┐    ┌───────────────┐
+│  CLIP    │<──│Segmenter  │    │ State Machine │
+│Classifier│   │PP-HumanSeg│    │SUSPECT→FRIEND│
+└────┬─────┘   └────┬──────┘    └───────┬───────┘
+     │              │                   │
+     └──────────────┴───────────────────┘
+                    │
+                    ▼
+             ┌────────────┐
+             │  Annotated │
+             │   Stream   │
+             └────────────┘
 ```
 
-### Key Concepts
+### Pipeline Components
 
-1. **Detection**: Find faces in each frame (SCRFD with GPU acceleration)
-2. **Tracking**: Assign consistent IDs across frames (SORT)
-3. **Embedding**: Extract 512-dim face vector (ArcFace/MobileFaceNet)
-4. **Aggregation**: Collect multiple embeddings, compute quality-weighted centroid
-5. **Scoring**: Match against enrolled faces (FAISS + PLDA)
-6. **State Machine**: SUSPECT → FRIENDLY/ENEMY based on confidence
-
-### Detector Options
-
-| Detector | GPU | Landmarks | Notes |
-|----------|-----|-----------|-------|
-| SCRFD | ✅ | ✅ 5-point | Recommended |
-| UltraFace | ✅ | ❌ | Fast, no landmarks |
-| YuNet | ❌ | ✅ 5-point | CPU fallback |
-
-## Embedding Aggregation
-
-Instead of matching each frame individually (noisy), we aggregate multiple embeddings:
-
-```
-Frame 1 ──▶ Embedding 1 ─┐
-Frame 2 ──▶ Embedding 2 ─┼──> Quality-Weighted ──> Match vs
-Frame 3 ──▶ Embedding 3 ─┤    Centroid            Database
-...                      │Frame N ──▶ Embedding N ─┘
-                         │
-                   Outliers filtered
-                   Low-quality rejected
-```
-
-Quality factors:
-- Detection confidence (40%)
-- Blur score (25%) - sharper is better
-- Brightness (15%) - optimal ~0.5
-- Face size (20%) - larger is better
+| Component | Model | Size | Backend |
+|-----------|-------|------|---------|
+| Face Detector | SCRFD 2.5G | 3.1 MB | DirectML GPU |
+| Face Embedder | ArcFace R100 | 249 MB | DirectML GPU |
+| Body Detector | YOLOv8n | 12 MB | DirectML GPU |
+| Human Segmenter | PP-HumanSeg | 168 MB | DirectML GPU |
+| Person Classifier | CLIP ViT-B/32 (INT8) | 85 MB | DirectML GPU |
 
 ## Classification States
 
@@ -87,11 +87,10 @@ Quality factors:
          ┌─────────────────────────────────┐
          │                                 │
          ▼                                 │
-    ┌─────────┐   confidence >= 0.78   ┌───┴─────┐
-───>│ SUSPECT │───────────────────────>│FRIENDLY │
-    └────┬────┘   + margin >= 0.20     └─────────┘
-         │        + consistency >= 12
-         │
+    ┌─────────┐   confidence >= 0.90   ┌───┴─────┐   cumulative   ┌───────────┐
+───>│ SUSPECT │───────────────────────>│FRIENDLY │───────────────>│ CONFIRMED │
+    └────┬────┘   + consistency >= 10  └─────────┘   >= 0.95      └───────────┘
+         │                                                         (tracking only)
          │  timeout (15s)
          ▼
     ┌─────────┐
@@ -99,133 +98,127 @@ Quality factors:
     └─────────┘
 ```
 
-| State    | Color  | Meaning                  |
-|----------|--------|--------------------------|
-| SUSPECT  | Yellow | Unknown, collecting data |
-| FRIENDLY | Green  | Matched enrolled person  |
-| ENEMY    | Red    | Unknown person (timeout) |
+| State | Color | Meaning |
+|-------|-------|---------|
+| SUSPECT | 🟡 Yellow | Unknown, collecting data |
+| FRIENDLY | 🟢 Light Green | Matched enrolled person |
+| CONFIRMED | 🟢 Bright Green | High confidence, tracking only |
+| ENEMY | 🔴 Red | Unknown person (timeout) |
 
-## Performance Tuning
+## Person Classification (CLIP)
 
-### Auto-Resolution (Recommended)
+Classify detected persons as soldiers, armed civilians, or unarmed civilians:
 
-Automatically find the highest resolution that achieves your target FPS:
+| Classification | Label | Color | Description |
+|----------------|-------|-------|-------------|
+| Soldier | IDF | 🟢 Green | Military uniform (OD green) |
+| Armed Civilian | ARMED | 🔴 Red | Civilian with visible weapon |
+| Unarmed Civilian | CIV | 🔵 Cyan | Regular civilian |
 
-```bash
-# Test auto-resolution tuning
-python tools/test_resolution.py --target-fps 10.0
+### CLIP Model Options
 
-# Enable in config.yaml
-camera:
-  auto_resolution: true
-  target_fps: 10.0
-  min_fps: 8.0
-```
-
-### Manual Optimization
-
-For high-resolution cameras (1080p+):
+| Version | Size | Startup | Export Command |
+|---------|------|---------|----------------|
+| **ONNX INT8** (default) | 85 MB | Fast (~1s) | `python tools/export_clip_onnx.py` |
+| PyTorch | 600 MB | Slow (~10s) | Auto-download from HuggingFace |
 
 ```yaml
 detection:
-  max_detection_size: 640  # Downscale to 640px for detection (3-5x faster)
-
-camera:
-  resolution: [1280, 720]  # Manual resolution setting
+  person_classification: true
+  clip_onnx: true              # Use ONNX (recommended) or PyTorch
+  armed_threshold: 0.6         # Min confidence for ARMED (higher = stricter)
+  soldier_threshold: 0.5       # Min confidence for IDF
 ```
-
-**Expected FPS by resolution:**
-- 1920x1080 with `max_detection_size: 640` → ~8-10 FPS
-- 1280x720 with `max_detection_size: 640` → ~12-15 FPS  
-- 640x480 (no downscaling) → ~20-25 FPS
 
 ## Configuration
 
+Key settings in `config.yaml`:
+
 ```yaml
 detection:
-  detector_type: scrfd     # scrfd (GPU) | ultraface (GPU) | yunet (CPU)
-  face_conf_threshold: 0.5 # Detection confidence threshold
+  detector_type: scrfd            # GPU-accelerated face detection
+  face_conf_threshold: 0.5
+  body_detection: true            # Enable body detection
+  segmentation: true              # Enable body contours
+  person_classification: true     # Enable CLIP classification
+  clip_onnx: true                 # Use ONNX model (85MB vs 600MB)
 
 thresholds:
-  t_accept: 0.70       # Min score for FRIENDLY
-  t_margin: 0.005      # Min margin between candidates
-  t_timeout: 15.0      # Seconds before ENEMY
-
-fusion:
-  embedding_window: 20      # Embeddings to collect
-  embedding_min: 4          # Min before matching
-  consistency_count: 10     # Consistent frames needed
+  t_accept: 0.90                  # Min score for FRIENDLY
+  t_margin: 0.005                 # Min margin between candidates
+  t_timeout: 15.0                 # Seconds before ENEMY
+  confirm_threshold: 0.95         # Cumulative confidence for CONFIRMED
 
 models:
-  face_detector: models/scrfd_2.5g.onnx    # GPU + landmarks
-  face_embedder: models/arcface_r100.onnx  # Best accuracy
-```
-
-## Body Detection & Classification (Optional)
-
-Enhance visualization with colored body contours and person classification:
-
-```bash
-# Download body models
-python tools/download_models.py
-# Select 'B' for body detection + segmentation
-# CLIP model downloads automatically on first run (~600MB)
-```
-
-Enable in `config.yaml`:
-```yaml
-detection:
-  body_detection: true
-  segmentation: true
-  person_classification: true     # CLIP-based soldier/civilian detection
-  classification_interval: 5      # Classify every N frames
-
-models:
+  face_detector: models/scrfd_2.5g.onnx
+  face_embedder: models/arcface_r100.onnx
   body_detector: models/yolov8n.onnx
   human_segmenter: models/human_seg.onnx
-  clip_cache: models/clip_cache   # CLIP model cache
+  clip_vision: models/clip_vision_int8.onnx
+  clip_embeddings: models/clip_text_embeddings.npy
 ```
 
-**Contour Colors (Recognition State):**
-- 🟢 **Green** = CONFIRMED (high confidence)
-- 🟢 **Light Green** = FRIENDLY (building confidence)
-- 🔴 **Red** = ENEMY (unknown)
-- 🟠 **Orange** = DETECTING (initial)
-- 🟡 **Yellow** = SUSPECT (evaluating)
+## Performance
 
-**Classification Labels (CLIP):**
-- **IDF** = Soldier (military uniform) - Green
-- **ARMED** = Armed civilian (threat) - Red
-- **CIV** = Unarmed civilian - Cyan
+Typical FPS at 640x480 resolution (slow webcam):
 
-See [docs/BodyDetection.md](docs/BodyDetection.md) for details.
+| Configuration | FPS |
+|---------------|-----|
+| Face only | ~15-20 |
+| Face + Body | ~12-15 |
+| Face + Body + Segmentation | ~10-13 |
+| Full pipeline (+ CLIP) | ~10-13 |
+
+### Optimization Tips
+
+```yaml
+# For higher FPS
+camera:
+  resolution: [640, 480]        # Lower resolution
+
+detection:
+  classification_interval: 10   # Classify less frequently
+  segmentation: false           # Disable contours
+```
 
 ## Tools
 
-| Tool                      | Purpose                  |
-|---------------------------|--------------------------|
-| `run_runtime.py`          | Main application         |
-| `auto_enroll.py`          | Capture & enroll faces   |
-| `enroll.py`               | Enroll from photos       |
-| `calibrate_thresholds.py` | Find optimal thresholds  |
-| `evaluate_model.py`       | Test model quality       |
-| `check_photos.py`         | Verify enrollment photos |
+| Tool | Purpose |
+|------|---------|
+| `run_runtime.py` | Main application |
+| `auto_enroll.py` | Capture & enroll faces |
+| `enroll.py` | Enroll from photos |
+| `export_clip_onnx.py` | Export CLIP to ONNX (85MB) |
+| `download_models.py` | Download required models |
+| `calibrate_thresholds.py` | Find optimal thresholds |
 
 ## Troubleshooting
 
-**Low recognition accuracy?**
-- Run `python tools/calibrate_thresholds.py --test-all-models`
+**CLIP not loading?**
+```bash
+# Export ONNX model
+python tools/export_clip_onnx.py
+```
+
+**Low FPS?**
+- Reduce resolution to 640x480
+- Increase `classification_interval` to 10+
+- Disable segmentation
+
+**False positives in face recognition?**
+- Increase `t_accept` threshold (try 0.92-0.95)
 - Ensure good lighting during enrollment
-- Capture varied poses/expressions
+- Enroll more varied poses
 
-**False positives?**
-- Increase `t_accept` threshold
-- Increase `t_margin` for better separation
-- Check embedding variance with `evaluate_model.py`
+**False ARMED classification?**
+- Increase `armed_threshold` (try 0.7-0.8)
 
-**Slow recognition?**
-- Reduce `embedding_min` (faster but less accurate)
-- Increase `embedding_sample_interval`
+## Documentation
+
+- [Configuration Reference](docs/Configuration.md)
+- [Body Detection & Classification](docs/BodyDetection.md)
+- [Architecture Overview](docs/Architecture.md)
+- [Deployment Guide](docs/Deployment.md)
 
 ## License
 
