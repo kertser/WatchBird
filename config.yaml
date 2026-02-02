@@ -59,6 +59,7 @@ detection:
   classification_interval: 5      # Classify every N frames (reduce for performance)
   armed_threshold: 0.6            # Min confidence for "ARMED" label (0-1, higher = stricter)
   soldier_threshold: 0.5          # Min confidence for "IDF" label (0-1, higher = stricter)
+  clip_onnx: true                 # Use ONNX model (84MB, faster) vs PyTorch (600MB)
   # Note: If neither threshold is met, defaults to "CIV" (unarmed civilian)
 
 # -----------------------------------------------------------------------------
@@ -229,8 +230,12 @@ models:
   body_detector: models/yolov8n.onnx
   human_segmenter: models/human_seg.onnx
 
-  # CLIP model for person classification (auto-downloaded from HuggingFace)
-  clip_cache: models/clip_cache   # Local cache directory for CLIP model (~600MB)
+  # CLIP model for person classification
+  # ONNX version (recommended): 84MB, faster startup, use clip_onnx: true
+  clip_vision: models/clip_vision_int8.onnx    # INT8 quantized vision encoder
+  clip_embeddings: models/clip_text_embeddings.npy  # Pre-computed text embeddings
+  # PyTorch version (fallback): 600MB, slower startup, use clip_onnx: false
+  clip_cache: models/clip_cache   # HuggingFace cache directory
 
 # -----------------------------------------------------------------------------
 # MJPEG Streaming

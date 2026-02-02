@@ -300,17 +300,44 @@ annotated = draw_body_contour_by_state(
 
 ### PersonClassifier (CLIP)
 
-```python
-from watchbird.detect.person_classifier import PersonClassifier
+Two implementations are available:
 
-classifier = PersonClassifier(
-    cache_dir="models/clip_cache"  # Local model cache
+#### ONNX Version (Recommended)
+
+Smaller and faster (~84MB vs 600MB):
+
+```python
+from watchbird.detect.person_classifier_onnx import PersonClassifierONNX
+
+classifier = PersonClassifierONNX(
+    model_path="models/clip_vision_int8.onnx",
+    text_embeddings_path="models/clip_text_embeddings.npy",
+    armed_threshold=0.6,
+    soldier_threshold=0.5
 )
 classifier.load()
 
 # Classify a single person crop
 person_type, confidence = classifier.classify(body_crop)
 # Returns: ("soldier" | "armed_civilian" | "unarmed_civilian", 0.0-1.0)
+```
+
+Export ONNX model: `python tools/export_clip_onnx.py`
+
+#### PyTorch Version (Fallback)
+
+Larger but more flexible:
+
+```python
+from watchbird.detect.person_classifier import PersonClassifier
+
+classifier = PersonClassifier(
+    cache_dir="models/clip_cache"  # Local model cache (~600MB)
+)
+classifier.load()
+
+# Classify a single person crop
+person_type, confidence = classifier.classify(body_crop)
 
 # Batch classification (more efficient)
 results = classifier.classify_batch([crop1, crop2, crop3])
@@ -327,10 +354,16 @@ results = classifier.classify_batch([crop1, crop2, crop3])
 
 #### CLIP Model Details
 
+Two versions available:
+
+| Version | Size | Startup | Export |
+|---------|------|---------|--------|
+| **ONNX INT8** | 84 MB | Fast | `python tools/export_clip_onnx.py` |
+| PyTorch | 600 MB | Slow | Auto-download from HuggingFace |
+
 - **Model**: OpenAI CLIP ViT-B/32
-- **Size**: ~600MB (cached locally)
-- **Backend**: PyTorch with DirectML/CUDA GPU support
-- **First Run**: Downloads from HuggingFace (one-time)
+- **Backend**: ONNX Runtime (DirectML/CUDA) or PyTorch
+- **Config**: Set `clip_onnx: true` (default) or `clip_onnx: false`
 
 ## Future Enhancements
 

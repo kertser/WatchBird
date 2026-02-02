@@ -22,6 +22,7 @@ from watchbird.detect.scrfd_detector import SCRFDDetector
 from watchbird.detect.body_detector import BodyDetector
 from watchbird.detect.human_segmenter import HumanSegmenter, draw_body_contour_by_state
 from watchbird.detect.person_classifier import PersonClassifier, get_person_type_color, get_person_type_label
+from watchbird.detect.person_classifier_onnx import PersonClassifierONNX
 from watchbird.embed.face_embedder import FaceEmbedder
 from watchbird.fusion.embedding_aggregator import TrackEmbeddingManager
 from watchbird.fusion.similarity import SimilarityFusion
@@ -371,21 +372,42 @@ class RecognitionPipeline:
         self.classification_interval = self.config.detection.get("classification_interval", 5)
 
         if self.classification_enabled:
-            clip_cache_dir = self.config.models.get("clip_cache", "models/clip_cache")
             armed_threshold = self.config.detection.get("armed_threshold", 0.5)
             soldier_threshold = self.config.detection.get("soldier_threshold", 0.5)
-            self.person_classifier = PersonClassifier(
-                cache_dir=clip_cache_dir,
-                armed_threshold=armed_threshold,
-                soldier_threshold=soldier_threshold
-            )
-            if self.person_classifier.load():
-                logger.info(f"Person classification enabled (interval={self.classification_interval})")
-                logger.info(f"Thresholds: armed={armed_threshold:.0%}, soldier={soldier_threshold:.0%}")
-            else:
-                logger.warning("Person classifier not loaded - classification disabled")
-                self.classification_enabled = False
-                self.person_classifier = None
+            use_onnx = self.config.detection.get("clip_onnx", True)  # Default to ONNX
+
+            if use_onnx:
+                # Try ONNX classifier first (smaller, faster)
+                clip_model = self.config.models.get("clip_vision", "models/clip_vision_int8.onnx")
+                clip_embeddings = self.config.models.get("clip_embeddings", "models/clip_text_embeddings.npy")
+                self.person_classifier = PersonClassifierONNX(
+                    model_path=clip_model,
+                    text_embeddings_path=clip_embeddings,
+                    armed_threshold=armed_threshold,
+                    soldier_threshold=soldier_threshold
+                )
+                if self.person_classifier.load():
+                    logger.info(f"Person classification enabled (ONNX, interval={self.classification_interval})")
+                    logger.info(f"Thresholds: armed={armed_threshold:.0%}, soldier={soldier_threshold:.0%}")
+                else:
+                    logger.warning("ONNX classifier failed, trying PyTorch...")
+                    use_onnx = False
+
+            if not use_onnx:
+                # Fallback to PyTorch classifier
+                clip_cache_dir = self.config.models.get("clip_cache", "models/clip_cache")
+                self.person_classifier = PersonClassifier(
+                    cache_dir=clip_cache_dir,
+                    armed_threshold=armed_threshold,
+                    soldier_threshold=soldier_threshold
+                )
+                if self.person_classifier.load():
+                    logger.info(f"Person classification enabled (PyTorch, interval={self.classification_interval})")
+                    logger.info(f"Thresholds: armed={armed_threshold:.0%}, soldier={soldier_threshold:.0%}")
+                else:
+                    logger.warning("Person classifier not loaded - classification disabled")
+                    self.classification_enabled = False
+                    self.person_classifier = None
 
         # Load track recovery config
         self.track_recovery_timeout = self.config.thresholds.get("track_recovery_timeout", 10.0)
