@@ -57,6 +57,9 @@ detection:
   # Person classification (CLIP-based)
   person_classification: true     # Enable soldier/civilian classification
   classification_interval: 5      # Classify every N frames (reduce for performance)
+  armed_threshold: 0.6            # Min confidence for "ARMED" label (0-1, higher = stricter)
+  soldier_threshold: 0.5          # Min confidence for "IDF" label (0-1, higher = stricter)
+  # Note: If neither threshold is met, defaults to "CIV" (unarmed civilian)
 
 # -----------------------------------------------------------------------------
 # Object Tracking (SORT-based)
@@ -243,8 +246,8 @@ stream:
 # Inference (GPU Acceleration)
 # -----------------------------------------------------------------------------
 # GPU support:
-#   - NVIDIA: pip install onnxruntime-gpu
-#   - AMD/Intel (Windows): pip install onnxruntime-directml
+#   - NVIDIA: uv pip install onnxruntime-gpu
+#   - AMD/Intel (Windows): uv pip install onnxruntime-directml
 #
 inference:
   use_gpu: true                   # Use GPU if available
@@ -256,31 +259,3 @@ inference:
 logging:
   level: INFO                     # DEBUG | INFO | WARNING | ERROR
   format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-
-# =============================================================================
-# Tuning Presets
-# =============================================================================
-#
-# FOR ACCURACY (fewer false positives):
-#   thresholds:
-#     t_accept: 0.85
-#     t_margin: 0.25
-#   fusion:
-#     embedding_min: 10
-#     consistency_count: 15
-#
-# FOR SPEED (faster recognition):
-#   thresholds:
-#     t_accept: 0.70
-#     t_margin: 0.15
-#   fusion:
-#     embedding_min: 4
-#     embedding_sample_interval: 3
-#
-# FOR ROBUSTNESS (varying conditions):
-#   fusion:
-#     embedding_window: 30
-#     embedding_outlier_threshold: 0.30
-#     embedding_quality_threshold: 0.35
-#
-# =============================================================================

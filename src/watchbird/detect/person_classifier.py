@@ -104,7 +104,10 @@ class PersonClassifier:
         self,
         model_name: str = "openai/clip-vit-base-patch32",
         device: Optional[str] = None,
-        cache_dir: Optional[str] = None
+        cache_dir: Optional[str] = None,
+        armed_threshold: float = 0.4,
+        soldier_threshold: float = 0.4,
+        default_category: str = "unarmed_civilian"
     ):
         """Initialize CLIP classifier.
 
@@ -112,9 +115,15 @@ class PersonClassifier:
             model_name: HuggingFace CLIP model name
             device: Device to use (cuda, cpu, or auto-detect)
             cache_dir: Directory to cache model weights
+            armed_threshold: Min confidence to classify as armed_civilian (0-1)
+            soldier_threshold: Min confidence to classify as soldier (0-1)
+            default_category: Default when no threshold met
         """
         self.model_name = model_name
         self.cache_dir = cache_dir or "models/clip_cache"
+        self.armed_threshold = armed_threshold
+        self.soldier_threshold = soldier_threshold
+        self.default_category = default_category
 
         # Auto-detect device
         if device is None:
@@ -345,6 +354,29 @@ class PersonClassifier:
             best_category = self._category_names[best_idx]
             best_score = float(probs_np[best_idx])
 
+            # Apply thresholds - require minimum confidence for armed/soldier
+            # Fall back to default category if threshold not met
+            if best_category == "armed_civilian" and best_score < self.armed_threshold:
+                # Not confident enough for armed - check if soldier is above threshold
+                soldier_idx = self._category_names.index("soldier")
+                soldier_score = float(probs_np[soldier_idx])
+                if soldier_score >= self.soldier_threshold:
+                    best_category = "soldier"
+                    best_score = soldier_score
+                else:
+                    best_category = self.default_category
+                    best_score = float(probs_np[self._category_names.index(self.default_category)])
+            elif best_category == "soldier" and best_score < self.soldier_threshold:
+                # Not confident enough for soldier - check if armed is above threshold
+                armed_idx = self._category_names.index("armed_civilian")
+                armed_score = float(probs_np[armed_idx])
+                if armed_score >= self.armed_threshold:
+                    best_category = "armed_civilian"
+                    best_score = armed_score
+                else:
+                    best_category = self.default_category
+                    best_score = float(probs_np[self._category_names.index(self.default_category)])
+
             if return_all_scores:
                 all_scores = {
                     cat: float(probs_np[i])
@@ -409,14 +441,34 @@ class PersonClassifier:
 
             probs_np = probs.cpu().numpy()
 
-            # Build results
+            # Build results with threshold logic
             results = [("unarmed_civilian", 0.0)] * len(person_crops)
             for batch_idx, orig_idx in enumerate(valid_indices):
                 best_idx = int(probs_np[batch_idx].argmax())
-                results[orig_idx] = (
-                    self._category_names[best_idx],
-                    float(probs_np[batch_idx, best_idx])
-                )
+                best_category = self._category_names[best_idx]
+                best_score = float(probs_np[batch_idx, best_idx])
+
+                # Apply thresholds
+                if best_category == "armed_civilian" and best_score < self.armed_threshold:
+                    soldier_idx = self._category_names.index("soldier")
+                    soldier_score = float(probs_np[batch_idx, soldier_idx])
+                    if soldier_score >= self.soldier_threshold:
+                        best_category = "soldier"
+                        best_score = soldier_score
+                    else:
+                        best_category = self.default_category
+                        best_score = float(probs_np[batch_idx, self._category_names.index(self.default_category)])
+                elif best_category == "soldier" and best_score < self.soldier_threshold:
+                    armed_idx = self._category_names.index("armed_civilian")
+                    armed_score = float(probs_np[batch_idx, armed_idx])
+                    if armed_score >= self.armed_threshold:
+                        best_category = "armed_civilian"
+                        best_score = armed_score
+                    else:
+                        best_category = self.default_category
+                        best_score = float(probs_np[batch_idx, self._category_names.index(self.default_category)])
+
+                results[orig_idx] = (best_category, best_score)
 
             return results
 

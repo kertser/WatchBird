@@ -74,6 +74,8 @@ detection:
   # Person classification (CLIP-based)
   person_classification: true     # Enable soldier/civilian classification
   classification_interval: 5      # Classify every N frames
+  armed_threshold: 0.6            # Min confidence for ARMED (higher = stricter)
+  soldier_threshold: 0.5          # Min confidence for IDF soldier
 
 models:
   # ... existing models ...
@@ -81,6 +83,22 @@ models:
   human_segmenter: models/human_seg.onnx
   clip_cache: models/clip_cache   # CLIP model cache (~600MB)
 ```
+
+### Classification Thresholds
+
+The `armed_threshold` and `soldier_threshold` control how strict the classification is:
+
+| Threshold | Effect |
+|-----------|--------|
+| **Low (0.3-0.4)** | More sensitive, may produce false positives |
+| **Medium (0.5-0.6)** | Balanced - recommended starting point |
+| **High (0.7-0.8)** | Strict - requires high confidence, fewer false positives |
+
+If the top classification doesn't meet its threshold, the system falls back to "CIV" (unarmed civilian).
+
+**Example scenarios:**
+- `armed_threshold: 0.7` - Only show "ARMED" when very confident (reduces false alarms)
+- `soldier_threshold: 0.4` - More lenient soldier detection (good for partial uniform visibility)
 
 ### 3. Run
 

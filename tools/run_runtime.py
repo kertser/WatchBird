@@ -372,9 +372,16 @@ class RecognitionPipeline:
 
         if self.classification_enabled:
             clip_cache_dir = self.config.models.get("clip_cache", "models/clip_cache")
-            self.person_classifier = PersonClassifier(cache_dir=clip_cache_dir)
+            armed_threshold = self.config.detection.get("armed_threshold", 0.5)
+            soldier_threshold = self.config.detection.get("soldier_threshold", 0.5)
+            self.person_classifier = PersonClassifier(
+                cache_dir=clip_cache_dir,
+                armed_threshold=armed_threshold,
+                soldier_threshold=soldier_threshold
+            )
             if self.person_classifier.load():
                 logger.info(f"Person classification enabled (interval={self.classification_interval})")
+                logger.info(f"Thresholds: armed={armed_threshold:.0%}, soldier={soldier_threshold:.0%}")
             else:
                 logger.warning("Person classifier not loaded - classification disabled")
                 self.classification_enabled = False
