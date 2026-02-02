@@ -30,7 +30,7 @@ python -m venv .venv && .venv\Scripts\activate  # Windows
 pip install -e .
 python tools/download_models.py
 
-# Export CLIP to ONNX (optional, for person classification)
+# Export CLIP to ONNX (optional, for person classification) or use quantized model
 python tools/export_clip_onnx.py
 
 # Enroll a person
@@ -59,7 +59,7 @@ View stream: `http://localhost:8080/stream`
      ▼              ▼                  ▼
 ┌──────────┐   ┌───────────┐    ┌───────────────┐
 │  CLIP    │<──│Segmenter  │    │ State Machine │
-│Classifier│   │PP-HumanSeg│    │SUSPECT→FRIEND│
+│Classifier│   │PP-HumanSeg│    │SUSPECT→FRIEND │
 └────┬─────┘   └────┬──────┘    └───────┬───────┘
      │              │                   │
      └──────────────┴───────────────────┘
