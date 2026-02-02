@@ -8,17 +8,20 @@
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────┐   ┌──────────┐   ┌─────────┐   ┌──────────┐   ┌───────────┐    │
-│  │ Camera  │──>│ Detector │──>│ Tracker │──>│ Embedder │──>│Aggregator │    │
-│  └─────────┘   └──────────┘   └─────────┘   └──────────┘   └─────┬─────┘    │
-│                                                                  │          │
-│                                                                  ▼          │
-│  ┌─────────┐   ┌──────────┐   ┌─────────────────────────────────────┐       │
-│  │ Output  │<──│  State   │<──│           Unified Scorer            │       │
-│  │ Stream  │   │ Machine  │   │  ┌─────────┐      ┌──────────┐      │       │
-│  └─────────┘   └──────────┘   │  │  FAISS  │ ───> │   PLDA   │      │       │
-│                               │  │ (fast)  │      │(accurate)│      │       │
-│                               │  └─────────┘      └──────────┘      │       │
-│                               └─────────────────────────────────────┘       │
+│  │ Camera  │──>│Face Det. │──>│ Tracker │──>│ Embedder │──>│Aggregator │    │
+│  └────┬────┘   └──────────┘   └─────────┘   └──────────┘   └─────┬─────┘    │
+│       │                                                           │          │
+│       │        ┌──────────┐   ┌──────────┐                       ▼          │
+│       └───────>│Body Det. │──>│Segmenter │         ┌────────────────────┐    │
+│                └──────────┘   └────┬─────┘         │  Unified Scorer    │    │
+│                                    │               │ ┌──────┐  ┌─────┐  │    │
+│                                    │               │ │FAISS │─>│PLDA │  │    │
+│                                    │               │ └──────┘  └─────┘  │    │
+│                                    │               └─────────┬──────────┘    │
+│  ┌─────────┐   ┌──────────┐       │                         │               │
+│  │ Output  │<──│  State   │<──────┴─────────────────────────┘               │
+│  │ Stream  │   │ Machine  │  (colored contours by state)                    │
+│  └─────────┘   └──────────┘                                                 │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -42,6 +45,39 @@ Frame ──▶ Detector ──▶ [bbox, confidence, landmarks]
                 ├── SCRFD (GPU, accurate landmarks) ← Recommended
                 ├── UltraFace (GPU, fast, no landmarks)
                 └── YuNet (CPU only, OpenCV)
+```
+
+### 2b. Body Detector (Optional - YOLOv8)
+```
+Frame ──▶ YOLOv8 ──▶ [body_bbox, confidence]
+                │              │
+                │              ▼
+                │    Filter: class=person, confidence > 0.5
+                │
+                ├── YOLOv8n (Nano - 6.3MB, fast)
+                └── YOLOv8s (Small - 22.5MB, accurate)
+                
+Body-to-Face Matching:
+  - Spatial heuristics (face in upper 40% of body)
+  - Horizontal alignment (face centered on body)
+```
+
+### 2c. Human Segmenter (Optional)
+```
+Frame/ROI ──▶ Segmenter ──▶ Binary Mask ──▶ Contours
+                  │                            │
+                  │                            ▼
+                  │              ┌─────────────────────────┐
+                  │              │ Colored by State:       │
+                  │              │ • CONFIRMED → Green     │
+                  │              │ • FRIENDLY → Light Green│
+                  │              │ • ENEMY → Red           │
+                  │              │ • DETECTING → Orange    │
+                  │              │ • SUSPECT → Yellow      │
+                  │              └─────────────────────────┘
+                  │
+                  ├── PP-HumanSeg (2.1MB, fast)
+                  └── YOLOv8-seg (segmentation variant)
 ```
 
 ### 3. Tracker (SORT-based)

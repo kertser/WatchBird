@@ -18,6 +18,8 @@ from watchbird.config import Config
 from watchbird.detect.face_detector import FaceDetector
 from watchbird.detect.ultraface_detector import UltraFaceDetector
 from watchbird.detect.scrfd_detector import SCRFDDetector
+from watchbird.detect.body_detector import BodyDetector
+from watchbird.detect.human_segmenter import HumanSegmenter, draw_body_contour_by_state
 from watchbird.embed.face_embedder import FaceEmbedder
 from watchbird.fusion.embedding_aggregator import TrackEmbeddingManager
 from watchbird.fusion.similarity import SimilarityFusion
@@ -95,6 +97,12 @@ class RecognitionPipeline:
         self.event_emitter = None
         self.mjpeg_server = None
         self.embedding_manager = None  # New: embedding aggregation
+
+        # Body detection and segmentation (optional)
+        self.body_detector = None
+        self.human_segmenter = None
+        self.body_detection_enabled = False
+        self.segmentation_enabled = False
 
         # Track state machines
         self.track_states: Dict[int, TrackStateMachine] = {}
@@ -310,6 +318,38 @@ class RecognitionPipeline:
                 port=self.config.stream.get("port", 8080)
             )
             self.mjpeg_server.start()
+
+        # Body detection and segmentation (optional)
+        self.body_detection_enabled = self.config.detection.get("body_detection", False)
+        self.segmentation_enabled = self.config.detection.get("segmentation", False)
+
+        if self.body_detection_enabled:
+            self.body_detector = BodyDetector(
+                model_path=self.config.models.get("body_detector"),
+                conf_threshold=self.config.detection.get("body_conf_threshold", 0.5),
+                use_gpu=self.config.inference.get("use_gpu", True),
+                gpu_device_id=self.config.inference.get("gpu_device_id", 0)
+            )
+            if self.body_detector.load():
+                logger.info("Body detection enabled")
+            else:
+                logger.warning("Body detector not loaded - body detection disabled")
+                self.body_detection_enabled = False
+                self.body_detector = None
+
+        if self.segmentation_enabled:
+            self.human_segmenter = HumanSegmenter(
+                model_path=self.config.models.get("human_segmenter"),
+                use_gpu=self.config.inference.get("use_gpu", True),
+                gpu_device_id=self.config.inference.get("gpu_device_id", 0),
+                threshold=self.config.detection.get("segmentation_threshold", 0.5)
+            )
+            if self.human_segmenter.load():
+                logger.info("Human segmentation enabled")
+            else:
+                logger.warning("Human segmenter not loaded - segmentation disabled")
+                self.segmentation_enabled = False
+                self.human_segmenter = None
 
         # Load track recovery config
         self.track_recovery_timeout = self.config.thresholds.get("track_recovery_timeout", 10.0)
@@ -839,6 +879,69 @@ class RecognitionPipeline:
 
         # Draw annotations
         annotated_frame = frame.copy()
+
+        # Body detection and segmentation (optional - draw under face boxes)
+        body_bboxes = np.array([]).reshape(0, 4)
+        body_confs = np.array([])
+
+        if self.body_detection_enabled and self.body_detector is not None:
+            body_bboxes, body_confs = self.body_detector.detect(frame)
+
+        # Segmentation for body contours
+        if self.segmentation_enabled and self.human_segmenter is not None:
+            # If we have body detections, segment each detected body
+            # Otherwise, segment the entire frame
+            contour_thickness = self.config.detection.get("contour_thickness", 3)
+            fill_alpha = self.config.detection.get("contour_fill_alpha", 0.15)
+
+            if len(body_bboxes) > 0:
+                # For each body, try to find matching face to get recognition state
+                for i, body_bbox in enumerate(body_bboxes):
+                    # Find best matching face for this body
+                    matched_state = "DETECTING"  # Default state
+                    for track in tracks:
+                        if track.time_since_update > 0:
+                            continue
+                        match_idx = self.body_detector.match_face_to_body(
+                            track.bbox, body_bboxes
+                        )
+                        if match_idx == i:
+                            # Face matches this body
+                            if track.track_id in self.track_states:
+                                matched_state = self.track_states[track.track_id].state.value
+                            break
+
+                    # Segment this body region
+                    body_mask = self.human_segmenter.segment_roi(frame, body_bbox)
+
+                    # Draw colored contour based on state
+                    annotated_frame = draw_body_contour_by_state(
+                        annotated_frame,
+                        body_mask,
+                        matched_state,
+                        contour_thickness=contour_thickness,
+                        fill_alpha=fill_alpha
+                    )
+            else:
+                # No body detection, segment entire frame
+                full_mask = self.human_segmenter.segment(frame)
+
+                # Determine state from any tracked face
+                primary_state = "DETECTING"
+                for track in tracks:
+                    if track.time_since_update > 0:
+                        continue
+                    if track.track_id in self.track_states:
+                        primary_state = self.track_states[track.track_id].state.value
+                        break
+
+                annotated_frame = draw_body_contour_by_state(
+                    annotated_frame,
+                    full_mask,
+                    primary_state,
+                    contour_thickness=contour_thickness,
+                    fill_alpha=fill_alpha
+                )
 
         for track in tracks:
             track_id = track.track_id

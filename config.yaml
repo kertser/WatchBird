@@ -44,6 +44,16 @@ detection:
   max_detection_size: 640         # Detection at 640px for good accuracy
   # detection_scale: 0.5          # Alternative: explicit scale factor
 
+  # Body detection and segmentation (for contour visualization)
+  body_detection: true           # Enable human body detection
+  body_conf_threshold: 0.5        # Min body detection confidence
+  segmentation: true             # Enable human segmentation for contours
+  segmentation_threshold: 0.5     # Min segmentation probability
+
+  # Contour visualization
+  contour_thickness: 3            # Thickness of body contour lines
+  contour_fill_alpha: 0.15        # Fill transparency (0=none, 1=opaque)
+
 # -----------------------------------------------------------------------------
 # Object Tracking (SORT-based)
 # -----------------------------------------------------------------------------
@@ -194,12 +204,23 @@ plda:
 #   - arcface_r100.onnx   (249MB, slower, best accuracy) ← Current
 #   - adaface_r100.onnx   (249MB, slower, best accuracy)
 #
+# Body detection (optional):
+#   - yolov8n.onnx: YOLOv8 Nano (6.3MB, fast person detection)
+#   - yolov8s.onnx: YOLOv8 Small (22.5MB, more accurate)
+#
+# Human segmentation (optional):
+#   - human_seg.onnx: PP-HumanSeg Lite (2.1MB, body contours)
+#
 models:
   face_detector: models/scrfd_2.5g.onnx   # GPU with landmarks
   #face_detector: models/ultraface_rfb320.onnx  # GPU, no landmarks
   #face_detector: models/yunet.onnx            # CPU fallback
   #face_embedder: models/mobilefacenet.onnx
   face_embedder: models/arcface_r100.onnx
+
+  # Body detection and segmentation (download with: python tools/download_models.py B)
+  body_detector: models/yolov8n.onnx
+  human_segmenter: models/human_seg.onnx
 
 # -----------------------------------------------------------------------------
 # MJPEG Streaming

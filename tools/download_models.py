@@ -92,6 +92,41 @@ def main():
     }
 
     # =========================================================================
+    # BODY DETECTORS (for human detection)
+    # =========================================================================
+    body_detectors = {
+        "7": {
+            "name": "YOLOv8n (Nano - Fast person detection)",
+            "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt",
+            "convert_url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.onnx",
+            "filename": "yolov8n.onnx",
+            "size": "6.3 MB",
+            "gpu": True,
+        },
+        "8": {
+            "name": "YOLOv8s (Small - Better accuracy)",
+            "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8s.onnx",
+            "filename": "yolov8s.onnx",
+            "size": "22.5 MB",
+            "gpu": True,
+        },
+    }
+
+    # =========================================================================
+    # HUMAN SEGMENTATION (for body contours)
+    # =========================================================================
+    segmenters = {
+        "9": {
+            "name": "MediaPipe Selfie Segmentation (Human segmentation)",
+            "url": "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite",
+            "onnx_url": "https://github.com/PINTO0309/PINTO_model_zoo/raw/main/426_Selfie-Segmentation/selfie_segmentation_landscape.onnx",
+            "filename": "human_seg.onnx",
+            "size": "0.6 MB",
+            "gpu": True,
+        },
+    }
+
+    # =========================================================================
     # MENU
     # =========================================================================
     print("\n--- FACE DETECTORS ---")
@@ -108,15 +143,62 @@ def main():
         print(f"  [{exists}] {int(key)+4}. {model['name']}")
         print(f"       {model['size']}")
 
+    print("\n--- BODY DETECTORS (Human Detection) ---")
+    for key, model in body_detectors.items():
+        exists = "✓" if (models_dir / model["filename"]).exists() else " "
+        print(f"  [{exists}] {key}. {model['name']}")
+        print(f"       GPU | {model['size']}")
+
+    print("\n--- HUMAN SEGMENTATION (Body Contours) ---")
+    for key, model in segmenters.items():
+        exists = "✓" if (models_dir / model["filename"]).exists() else " "
+        print(f"  [{exists}] {key}. {model['name']}")
+        print(f"       GPU | {model['size']}")
+
     print("\n--- OPTIONS ---")
     print("  A. Download all recommended (SCRFD 2.5G + ArcFace R100)")
+    print("  B. Download body detection + segmentation (YOLOv8n + PP-HumanSeg)")
     print("  Q. Quit")
 
     print("\n" + "=" * 70)
-    choice = input("Select model to download (1-6, A, or Q): ").strip().upper()
+    choice = input("Select model to download (1-9, A, B, or Q): ").strip().upper()
 
     if choice == 'Q':
         print("Cancelled.")
+        return
+
+    if choice == 'B':
+        # Download body detection and segmentation models
+        to_download = []
+
+        # YOLOv8n for body detection
+        if not (models_dir / "yolov8n.onnx").exists():
+            to_download.append(body_detectors["7"])
+
+        # PP-HumanSeg for segmentation
+        if not (models_dir / "human_seg.onnx").exists():
+            to_download.append(segmenters["9"])
+
+        if not to_download:
+            print("\n✓ Body detection models already exist!")
+            return
+
+        for model in to_download:
+            output_path = models_dir / model['filename']
+            print(f"\nDownloading: {model['name']}")
+            # Use onnx_url if available, otherwise use url
+            url = model.get('onnx_url', model.get('convert_url', model['url']))
+            download_file(url, str(output_path))
+
+        print("\n" + "=" * 70)
+        print("✓ Body detection models downloaded!")
+        print("\nAdd to config.yaml:")
+        print("  detection:")
+        print("    body_detection: true")
+        print("    segmentation: true")
+        print("  models:")
+        print("    body_detector: models/yolov8n.onnx")
+        print("    human_segmenter: models/human_seg.onnx")
         return
 
     if choice == 'A':
@@ -151,6 +233,10 @@ def main():
         selected = detectors[choice]
     elif choice in ['5', '6']:
         selected = embedders[str(int(choice) - 4)]
+    elif choice in body_detectors:
+        selected = body_detectors[choice]
+    elif choice in segmenters:
+        selected = segmenters[choice]
     else:
         print("Invalid choice.")
         return

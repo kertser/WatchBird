@@ -161,6 +161,38 @@ models:
   face_embedder: models/arcface_r100.onnx  # Best accuracy
 ```
 
+## Body Detection & Segmentation (Optional)
+
+Enhance visualization with colored body contours:
+
+```bash
+# Download body models
+python tools/download_models.py
+# Select 'B' for body detection + segmentation
+```
+
+Enable in `config.yaml`:
+```yaml
+detection:
+  body_detection: true
+  segmentation: true
+  contour_thickness: 3
+  contour_fill_alpha: 0.15
+
+models:
+  body_detector: models/yolov8n.onnx
+  human_segmenter: models/human_seg.onnx
+```
+
+**Contour Colors by State:**
+- 🟢 **Green** = CONFIRMED (high confidence)
+- 🟢 **Light Green** = FRIENDLY (building confidence)
+- 🔴 **Red** = ENEMY (unknown)
+- 🟠 **Orange** = DETECTING (initial)
+- 🟡 **Yellow** = SUSPECT (evaluating)
+
+See [docs/BodyDetection.md](docs/BodyDetection.md) for details.
+
 ## Tools
 
 | Tool                      | Purpose                  |
