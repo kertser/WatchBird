@@ -28,7 +28,7 @@ from watchbird.index.faiss_wrapper import FaissIndex
 from watchbird.index.meta_store import MetaStore
 from watchbird.runtime.events import EventEmitter
 from watchbird.runtime.state_machine import TrackStateMachine
-from watchbird.stream.mjpeg_server import MJPEGServer, draw_detection_boxes
+from watchbird.stream.mjpeg_server import MJPEGServer, draw_detection_boxes, draw_face_indicator
 from watchbird.track.tracker import Tracker
 from watchbird.utils.image_ops import extract_roi
 from watchbird.utils.quality import compute_face_quality
@@ -943,6 +943,10 @@ class RecognitionPipeline:
                     fill_alpha=fill_alpha
                 )
 
+        # Choose drawing function based on whether segmentation is enabled
+        # When segmentation is active, use elegant corner brackets instead of full boxes
+        use_face_indicator = self.segmentation_enabled and self.human_segmenter is not None
+
         for track in tracks:
             track_id = track.track_id
 
@@ -955,30 +959,60 @@ class RecognitionPipeline:
             if track_id in self.track_states:
                 state_machine = self.track_states[track_id]
 
-                annotated_frame = draw_detection_boxes(
-                    annotated_frame,
-                    track_id=track_id,
-                    bbox=track.bbox,
-                    state=state_machine.state.value,
-                    person_id=state_machine.person_id,
-                    confidence=state_machine.confidence,
-                    cumulative_confidence=state_machine.cumulative_confidence,
-                    head_tilt=track.head_tilt,
-                    landmarks=track.landmarks
-                )
+                if use_face_indicator:
+                    # Elegant rotating corner brackets - body contour already drawn
+                    annotated_frame = draw_face_indicator(
+                        annotated_frame,
+                        track_id=track_id,
+                        bbox=track.bbox,
+                        state=state_machine.state.value,
+                        person_id=state_machine.person_id,
+                        confidence=state_machine.confidence,
+                        cumulative_confidence=state_machine.cumulative_confidence,
+                        head_tilt=track.head_tilt,
+                        landmarks=track.landmarks,
+                        draw_landmarks=True
+                    )
+                else:
+                    # Full bounding box with rotated label support
+                    annotated_frame = draw_detection_boxes(
+                        annotated_frame,
+                        track_id=track_id,
+                        bbox=track.bbox,
+                        state=state_machine.state.value,
+                        person_id=state_machine.person_id,
+                        confidence=state_machine.confidence,
+                        cumulative_confidence=state_machine.cumulative_confidence,
+                        head_tilt=track.head_tilt,
+                        landmarks=track.landmarks
+                    )
             else:
-                # Draw basic detection box for untracked faces
-                annotated_frame = draw_detection_boxes(
-                    annotated_frame,
-                    track_id=track_id,
-                    bbox=track.bbox,
-                    state="DETECTING",
-                    person_id=None,
-                    confidence=track.confidence,
-                    cumulative_confidence=0.0,
-                    head_tilt=track.head_tilt,
-                    landmarks=track.landmarks
-                )
+                # Draw basic detection indicator for untracked faces
+                if use_face_indicator:
+                    annotated_frame = draw_face_indicator(
+                        annotated_frame,
+                        track_id=track_id,
+                        bbox=track.bbox,
+                        state="DETECTING",
+                        person_id=None,
+                        confidence=track.confidence,
+                        cumulative_confidence=0.0,
+                        head_tilt=track.head_tilt,
+                        landmarks=track.landmarks,
+                        draw_landmarks=True
+                    )
+                else:
+                    annotated_frame = draw_detection_boxes(
+                        annotated_frame,
+                        track_id=track_id,
+                        bbox=track.bbox,
+                        state="DETECTING",
+                        person_id=None,
+                        confidence=track.confidence,
+                        cumulative_confidence=0.0,
+                        head_tilt=track.head_tilt,
+                        landmarks=track.landmarks
+                    )
 
         return annotated_frame
 

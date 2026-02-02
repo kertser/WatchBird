@@ -46,12 +46,12 @@ detection:
 
   # Body detection and segmentation (for contour visualization)
   body_detection: true           # Enable human body detection
-  body_conf_threshold: 0.5        # Min body detection confidence
+  body_conf_threshold: 0.6        # Min body detection confidence
   segmentation: true             # Enable human segmentation for contours
-  segmentation_threshold: 0.5     # Min segmentation probability
+  segmentation_threshold: 0.8     # Min segmentation probability
 
   # Contour visualization
-  contour_thickness: 3            # Thickness of body contour lines
+  contour_thickness: 1            # Thickness of body contour lines
   contour_fill_alpha: 0.15        # Fill transparency (0=none, 1=opaque)
 
 # -----------------------------------------------------------------------------
