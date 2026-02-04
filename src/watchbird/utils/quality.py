@@ -42,11 +42,11 @@ def compute_face_quality(
 
     # Blur score with hard cutoff
     # blur_threshold is the "good" threshold - above this is sharp
-    # Hard cutoff at 50% of threshold - below this is unusable
+    # Hard cutoff at 20% of threshold - below this is unusable
     blur_metric = compute_blur_metric(face_roi)
     metrics["blur_metric"] = blur_metric
 
-    hard_cutoff = blur_threshold * 0.3  # 30% of threshold = unusable
+    hard_cutoff = blur_threshold * 0.2  # 20% of threshold = unusable (was 0.3)
     if blur_metric < hard_cutoff:
         # Extremely blurry - reject completely
         blur_score = 0.0

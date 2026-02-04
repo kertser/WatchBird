@@ -78,10 +78,10 @@ tracking:
 # Embeddings from low-quality frames are rejected to improve accuracy.
 # KEY: Out-of-focus faces produce unreliable embeddings causing FP/FN
 quality:
-  min_face_quality: 0.5           # Min quality for processing (changed from 0.3)
-  min_enroll_quality: 0.8         # Min quality for enrollment photos
+  min_face_quality: 0.4           # Min quality for processing (lowered for webcam)
+  min_enroll_quality: 0.5         # Min quality for enrollment photos (lowered for webcam)
   min_bbox_size: 40               # Min face bounding box size (pixels)
-  blur_threshold: 50.0            # Laplacian variance threshold (changed from 100)
+  blur_threshold: 20.0            # Laplacian variance threshold (lowered for webcam - was 50)
 
 # -----------------------------------------------------------------------------
 # Embedding Aggregation
