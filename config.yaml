@@ -46,9 +46,9 @@ detection:
 
   # Body detection and segmentation (for contour visualization)
   body_detection: true           # Enable human body detection
-  body_conf_threshold: 0.6        # Min body detection confidence
+  body_conf_threshold: 0.6       # Min body detection confidence - higher to reduce false positives
   segmentation: true             # Enable human segmentation for contours
-  segmentation_threshold: 0.8     # Min segmentation probability
+  segmentation_threshold: 0.8    # Min segmentation probability for contour inclusion (higher = more conservative)
 
   # Contour visualization
   contour_thickness: 1            # Thickness of body contour lines
@@ -57,8 +57,8 @@ detection:
   # Person classification (CLIP-based)
   person_classification: true     # Enable soldier/civilian classification
   classification_interval: 5      # Classify every N frames (reduce for performance)
-  armed_threshold: 0.6            # Min confidence for "ARMED" label (0-1, higher = stricter)
-  soldier_threshold: 0.5          # Min confidence for "IDF" label (0-1, higher = stricter)
+  armed_threshold: 0.9            # Min confidence for "ARMED" label (0-1, higher = stricter)
+  soldier_threshold: 0.85         # Min confidence for "IDF" label (0-1, higher = stricter)
   clip_onnx: true                 # Use ONNX model (84MB, faster) vs PyTorch (600MB)
   # Note: If neither threshold is met, defaults to "CIV" (unarmed civilian)
 

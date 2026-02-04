@@ -1,0 +1,92 @@
+# WatchBird TODO
+
+## Enrollment & Embedding Quality
+- [ ] Multi-embedding diversity: Ensure embeddings per identity have pose/lighting variety
+      (Implemented in enroll.py via diversity bins for yaw/pitch/lighting, max_per_diversity_bin config)
+- [ ] Redundancy filter: Reject embeddings with >0.95 similarity (duplicate)
+      (Implemented in enroll.py via duplicate_similarity threshold check)
+- [ ] Outlier filter: Reject embeddings with <0.6 similarity (bad sample)
+      (Implemented in enroll.py via outlier_similarity threshold check against centroid)
+- [ ] Per-identity threshold tuning: Allow different t_accept based on embedding variance
+      (Implemented in enroll.py via identity_stats with variance-based t_accept calculation)
+
+## Recognition Accuracy
+- [ ] Adaptive quality thresholds: Adjust min_face_quality based on ambient lighting
+      (Implemented in quality.py via compute_adaptive_min_quality, config supports adaptive_min_quality)
+- [ ] Low-light enhancement: Add CLAHE preprocessing before embedding extraction
+      (Implemented in image_ops.py via apply_clahe, used in run_runtime.py with config enable_clahe)
+- [ ] Pose-aware matching: Weight embeddings by head pose, penalize angles >45°
+      (Implemented in quality.py with pose_score from pose.py, max_pose_angle and pose_penalty in config)
+- [ ] Motion blur detection: Skip frame or apply deblur preprocessing
+      (Implemented in quality.py via motion_blur_threshold, image_ops.py has apply_unsharp_mask for deblur)
+- [ ] Backlight compensation: Detect silhouette conditions, adjust or skip frame
+      (Implemented in quality.py via compute_backlight_ratio, backlight_penalty in config)
+
+## IFF Robustness
+- [ ] Temporal voting: Require 80% identity agreement over sliding window (10 frames)
+      (Implemented in state_machine.py via temporal_voting_window/ratio, _vote_ratio_ok method)
+- [ ] Identity stability bonus: Boost confidence for consistent identity across frames
+      (Implemented in state_machine.py via stability_bonus param, _identity_stability_ratio method)
+- [ ] Occlusion detection: Flag partial faces, apply confidence penalty
+      (Implemented in quality.py via compute_occlusion_score, occlusion_penalty in config)
+- [ ] Anti-spoofing: Add texture analysis to detect photo/screen attacks
+      (Implemented in quality.py via compute_spoof_score with LBP texture, spoof_threshold/penalty in config)
+- [ ] Open-set unknown rejection: Explicit LLR threshold for "definitely unknown" (<-0.5)
+      (Implemented in config.yaml as unknown_reject_threshold: -0.5 in plda section)
+
+## Post-Confirmation Stability
+- [ ] CONFIRMED state lock-in: Add hysteresis before state demotion
+      (Implemented in state_machine.py via confirmed_hysteresis param, _confirmed_loss_start tracking)
+- [ ] Embedding freeze: Stop updating centroid once CONFIRMED to prevent drift
+      (Implemented via freeze_embeddings_on_confirmed config, checked in run_runtime.py)
+- [ ] Re-verification interval: Periodic lightweight check (~30s) to maintain state
+      (Implemented via reverify_interval config, checked in run_runtime.py main loop)
+- [ ] Graceful degradation: If quality drops, maintain state but flag uncertainty
+      (Implemented in state_machine.py via mark_uncertain/clear_uncertainty, used in run_runtime.py)
+
+## Edge Case Handling
+- [ ] Extreme angle fallback: Use body/gait features when face angle unusable
+- [ ] IR/night mode: Separate quality thresholds, grayscale normalization for IR cameras
+      (Implemented in config.yaml via ir_mode, min_face_quality_ir, blur_threshold_ir; image_ops.py has normalize_ir_frame)
+
+## Calibration & Tuning
+- [ ] Runtime PLDA recalibration: Update stats with high-confidence detections
+      (Implemented in unified_scorer.py and plda_scorer.py via update_runtime_calibration, config plda.runtime_calibration)
+
+## Performance Optimization
+- [ ] Batched inference: Accumulate faces, extract embeddings in batches of 4-8
+- [ ] CUDA stream pipelining: Overlap detection (frame N) with embedding (frame N-1)
+- [ ] Zero-copy frame handoff: Use CUDA unified memory between capture and inference
+- [ ] Memory-mapped model loading: Reduce startup time on constrained devices
+- [ ] INT8 quantization: Quantize arcface_r100.onnx and scrfd_2.5g.onnx
+
+## Jetson Orin Deployment
+- [ ] TensorRT conversion: Convert all ONNX models, enable DLA cores
+- [ ] C++/CUDA inference core: Port hot path to C++ with pybind11 wrapper
+- [ ] ONNX Runtime C++ API: Replace Python runtime for 2-3x latency reduction
+
+Architecture target:
+```
+┌─────────────────────────────────────┐
+│  Python: Config, Orchestration, API │
+├─────────────────────────────────────┤
+│  pybind11 bridge                    │
+├─────────────────────────────────────┤
+│  C++: Detection → Align → Embed     │  ← Hot path
+│  (TensorRT + CUDA streams)          │
+└─────────────────────────────────────┘
+```
+
+## Edge Deployment
+- [ ] Headless mode: Strip OpenCV GUI, run pure inference + MJPEG server
+- [ ] Systemd service: Auto-start on boot with watchdog restart
+- [ ] Offline enrollment sync: Queue enrollments when disconnected, sync when online
+- [ ] Model hot-reload: Swap PLDA/index without full restart
+
+## Container Packaging
+- [ ] Docker multi-stage build with CUDA base
+- [ ] JetPack container: Use NVIDIA L4T base (nvcr.io/nvidia/l4t-tensorrt:r8.6.2-runtime)
+- [ ] Volume mounts: /data for index persistence
+- [ ] Expose ports: 8080 (MJPEG), 8081 (API)
+- [ ] Runtime config: --runtime=nvidia or --gpus all
+- [ ] Health check: /health endpoint or process probe
