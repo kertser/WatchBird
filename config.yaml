@@ -10,8 +10,8 @@
 # -----------------------------------------------------------------------------
 camera:
   backend: usb                    # Options: usb | picamera2 | video_file
-  #resolution: [1024, 768]        # Reduced resolution for better FPS
-  resolution: [640, 480]
+  resolution: [1024, 768]        # Reduced resolution for better FPS
+  #resolution: [640, 480]
   fps: 30                         # Target frame rate
   video_path: null                # Path for video_file backend (optional)
   # device_id: 0                  # Camera device index (default: 0)
@@ -59,6 +59,8 @@ detection:
   classification_interval: 5      # Classify every N frames (reduce for performance)
   armed_threshold: 0.9            # Min confidence for "ARMED" label (0-1, higher = stricter)
   soldier_threshold: 0.85         # Min confidence for "IDF" label (0-1, higher = stricter)
+  armed_clear_threshold: 0.6     # Confidence required to CLEAR armed status (hysteresis)
+                                  # Once marked armed, needs very high unarmed confidence to clear
   clip_onnx: true                 # Use ONNX model (84MB, faster) vs PyTorch (600MB)
   # Note: If neither threshold is met, defaults to "CIV" (unarmed civilian)
 

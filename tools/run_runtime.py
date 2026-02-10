@@ -370,6 +370,7 @@ class RecognitionPipeline:
         # Person classification (CLIP-based soldier/civilian detection)
         self.classification_enabled = self.config.detection.get("person_classification", False)
         self.classification_interval = self.config.detection.get("classification_interval", 5)
+        self.armed_clear_threshold = self.config.detection.get("armed_clear_threshold", 0.95)
 
         if self.classification_enabled:
             armed_threshold = self.config.detection.get("armed_threshold", 0.5)
@@ -967,12 +968,38 @@ class RecognitionPipeline:
                 body_classifications = self.person_classifier.classify_batch(body_crops)
 
                 # Update track classifications based on face-body matching
+                # Apply hysteresis: once armed, require very high confidence to clear
                 for i, (person_type, conf) in enumerate(body_classifications):
                     for track in tracks:
                         if track.time_since_update > 0:
                             continue
                         match_idx = self.body_detector.match_face_to_body(track.bbox, body_bboxes)
                         if match_idx == i:
+                            # Get previous classification for this track
+                            prev_type, prev_conf = self.track_classifications.get(
+                                track.track_id, (None, 0.0)
+                            )
+
+                            # Apply hysteresis: once armed, require high confidence to clear
+                            # This applies to both armed→unarmed AND armed→soldier transitions
+                            # (An armed hostile shouldn't easily become "IDF/friendly")
+                            if prev_type == "armed_civilian" and person_type != "armed_civilian":
+                                # Was armed, now detected as something else
+                                # Only clear if new classification confidence is very high
+                                if conf < self.armed_clear_threshold:
+                                    # Not confident enough - keep armed status
+                                    logger.debug(
+                                        f"Track {track.track_id}: keeping ARMED "
+                                        f"({person_type} conf={conf:.2f} < {self.armed_clear_threshold:.2f})"
+                                    )
+                                    # Keep the previous armed classification
+                                    continue
+                                else:
+                                    logger.info(
+                                        f"Track {track.track_id}: clearing ARMED → {person_type} "
+                                        f"(conf={conf:.2f} >= {self.armed_clear_threshold:.2f})"
+                                    )
+
                             self.track_classifications[track.track_id] = (person_type, conf)
                             break
 

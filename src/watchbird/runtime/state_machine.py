@@ -267,19 +267,45 @@ class TrackStateMachine:
                     )
 
                 # Consistency-based margin relaxation:
-                # If consistency is very high (2x required), we can trust the match even with low margin
-                # This handles cases with few enrolled identities that have similar embeddings
+                # With few enrolled identities that have similar embeddings (e.g., same household),
+                # the margin can be very low even when recognition is correct.
+                #
+                # Key insight: A high score (e.g., 0.927) + high consistency means the system
+                # is confidently and consistently recognizing the person. The low margin just
+                # means the two enrolled identities produce similar scores, not that we're uncertain.
+                #
+                # Relaxation tiers:
+                # 1. Very high score (>0.92) + consistency met → relax to 0.001 (essentially no margin)
+                # 2. High consistency (2x required) → relax to 0.001
+                # 3. High score (>0.90) + consistency (1.2x required) → relax to 0.002
                 margin_ok = median_margin >= required_margin
-                if not margin_ok and consistency >= self.consistency_count * 2:
-                    # High consistency can compensate for low margin
-                    # Still require some minimal margin to avoid complete ties
-                    minimal_margin = 0.001
-                    if median_margin >= minimal_margin:
-                        margin_ok = True
-                        logger.debug(
-                            f"Track {self.track_id}: margin relaxed due to high consistency "
-                            f"({consistency} >= {self.consistency_count * 2})"
-                        )
+                minimal_margin = 0.001  # Minimum to avoid exact ties
+
+                if not margin_ok:
+                    # Tier 1: Very high score + consistency met
+                    if median_score >= 0.92 and consistency >= self.consistency_count:
+                        if median_margin >= minimal_margin:
+                            margin_ok = True
+                            logger.debug(
+                                f"Track {self.track_id}: margin relaxed due to very high score "
+                                f"({median_score:.3f} >= 0.92) with consistency={consistency}"
+                            )
+                    # Tier 2: High consistency (2x required)
+                    elif consistency >= self.consistency_count * 2:
+                        if median_margin >= minimal_margin:
+                            margin_ok = True
+                            logger.debug(
+                                f"Track {self.track_id}: margin relaxed due to very high consistency "
+                                f"({consistency} >= {self.consistency_count * 2})"
+                            )
+                    # Tier 3: High score + moderate consistency
+                    elif median_score >= 0.90 and consistency >= int(self.consistency_count * 1.2):
+                        if median_margin >= 0.002:  # Slightly higher minimal margin
+                            margin_ok = True
+                            logger.debug(
+                                f"Track {self.track_id}: margin relaxed due to high score "
+                                f"({median_score:.3f}) + consistency ({consistency})"
+                            )
 
                 if (
                     median_score >= self.t_accept and
@@ -350,11 +376,23 @@ class TrackStateMachine:
                 consistency = metrics.get("consistency", 0)
 
                 # Check if detection is still consistent with same person
-                # Apply same margin relaxation as for initial acceptance
+                # Apply same margin relaxation tiers as for initial acceptance
                 margin_ok = median_margin >= self.t_margin
-                if not margin_ok and consistency >= self.consistency_count * 2:
-                    if median_margin >= 0.001:
-                        margin_ok = True
+                minimal_margin = 0.001
+
+                if not margin_ok:
+                    # Tier 1: Very high score + consistency met
+                    if median_score >= 0.92 and consistency >= self.consistency_count:
+                        if median_margin >= minimal_margin:
+                            margin_ok = True
+                    # Tier 2: High consistency (2x required)
+                    elif consistency >= self.consistency_count * 2:
+                        if median_margin >= minimal_margin:
+                            margin_ok = True
+                    # Tier 3: High score + moderate consistency
+                    elif median_score >= 0.90 and consistency >= int(self.consistency_count * 1.2):
+                        if median_margin >= 0.002:
+                            margin_ok = True
 
                 if (
                     person_id == self.person_id and
@@ -508,9 +546,27 @@ class TrackStateMachine:
                 )
 
                 # Check for FRIENDLY transition (same criteria as from SUSPECT)
+                # Apply same margin relaxation tiers
+                margin_ok = median_margin >= self.t_margin
+                minimal_margin = 0.001
+
+                if not margin_ok:
+                    # Tier 1: Very high score + consistency met
+                    if median_score >= 0.92 and consistency >= self.consistency_count:
+                        if median_margin >= minimal_margin:
+                            margin_ok = True
+                    # Tier 2: High consistency (2x required)
+                    elif consistency >= self.consistency_count * 2:
+                        if median_margin >= minimal_margin:
+                            margin_ok = True
+                    # Tier 3: High score + moderate consistency
+                    elif median_score >= 0.90 and consistency >= int(self.consistency_count * 1.2):
+                        if median_margin >= 0.002:
+                            margin_ok = True
+
                 if (
                     median_score >= self.t_accept and
-                    median_margin >= self.t_margin and
+                    margin_ok and
                     consistency >= self.consistency_count
                 ):
                     self.state = TrackState.FRIENDLY
