@@ -10,8 +10,8 @@
 # -----------------------------------------------------------------------------
 camera:
   backend: usb                    # Options: usb | picamera2 | video_file
-  #resolution: [1024, 768]        # Reduced resolution for better FPS
-  resolution: [640, 480]
+  resolution: [1024, 768]        # Reduced resolution for better FPS
+  #resolution: [640, 480]
   fps: 30                         # Target frame rate
   video_path: null                # Path for video_file backend (optional)
   # device_id: 0                  # Camera device index (default: 0)
@@ -46,9 +46,9 @@ detection:
 
   # Body detection and segmentation (for contour visualization)
   body_detection: true           # Enable human body detection
-  body_conf_threshold: 0.6        # Min body detection confidence
+  body_conf_threshold: 0.6       # Min body detection confidence - higher to reduce false positives
   segmentation: true             # Enable human segmentation for contours
-  segmentation_threshold: 0.8     # Min segmentation probability
+  segmentation_threshold: 0.8    # Min segmentation probability for contour inclusion (higher = more conservative)
 
   # Contour visualization
   contour_thickness: 1            # Thickness of body contour lines
@@ -57,8 +57,10 @@ detection:
   # Person classification (CLIP-based)
   person_classification: true     # Enable soldier/civilian classification
   classification_interval: 5      # Classify every N frames (reduce for performance)
-  armed_threshold: 0.6            # Min confidence for "ARMED" label (0-1, higher = stricter)
-  soldier_threshold: 0.5          # Min confidence for "IDF" label (0-1, higher = stricter)
+  armed_threshold: 0.9            # Min confidence for "ARMED" label (0-1, higher = stricter)
+  soldier_threshold: 0.85         # Min confidence for "IDF" label (0-1, higher = stricter)
+  armed_clear_threshold: 0.6     # Confidence required to CLEAR armed status (hysteresis)
+                                  # Once marked armed, needs very high unarmed confidence to clear
   clip_onnx: true                 # Use ONNX model (84MB, faster) vs PyTorch (600MB)
   # Note: If neither threshold is met, defaults to "CIV" (unarmed civilian)
 
@@ -78,10 +80,10 @@ tracking:
 # Embeddings from low-quality frames are rejected to improve accuracy.
 # KEY: Out-of-focus faces produce unreliable embeddings causing FP/FN
 quality:
-  min_face_quality: 0.5           # Min quality for processing (changed from 0.3)
-  min_enroll_quality: 0.8         # Min quality for enrollment photos
+  min_face_quality: 0.4           # Min quality for processing (lowered for webcam)
+  min_enroll_quality: 0.5         # Min quality for enrollment photos (lowered for webcam)
   min_bbox_size: 40               # Min face bounding box size (pixels)
-  blur_threshold: 50.0            # Laplacian variance threshold (changed from 100)
+  blur_threshold: 20.0            # Laplacian variance threshold (lowered for webcam - was 50)
 
 # -----------------------------------------------------------------------------
 # Embedding Aggregation
@@ -132,7 +134,7 @@ fusion:
 #   - Use high consistency to compensate for low margin
 #
 thresholds:
-  t_accept: 0.90                  # Min calibrated score for FRIENDLY (INCREASED to reduce FP)
+  t_accept: 0.85                  # Min calibrated score for FRIENDLY (INCREASED to reduce FP)
   t_margin: 0.005                 # Min margin - very low since only 2 similar identities
   t_timeout: 15.0                 # Seconds in SUSPECT before ENEMY
   identity_switch_margin: 0.05    # Extra margin required to switch identity

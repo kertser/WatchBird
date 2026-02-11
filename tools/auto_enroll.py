@@ -22,6 +22,7 @@ except ImportError:
 
 from watchbird.config import Config
 from watchbird.detect.face_detector import FaceDetector
+from watchbird.detect.scrfd_detector import SCRFDDetector
 from watchbird.embed.face_embedder import FaceEmbedder
 from watchbird.index.faiss_wrapper import FaissIndex
 from watchbird.index.meta_store import MetaStore
@@ -57,7 +58,7 @@ class AutoEnrollmentSession:
         self,
         person_id: str,
         config: Config,
-        target_confidence: float = 0.85,
+        target_confidence: float = 0.80,  # Lowered from 0.85
         min_photos: int = 5,
         max_photos: int = 30,
         test_interval: int = 3,
@@ -132,15 +133,28 @@ class AutoEnrollmentSession:
             logger.error("Failed to open camera")
             return False
 
-        # Face detector
-        self.face_detector = FaceDetector(
-            model_path=self.config.models.get("face_detector"),
-            conf_threshold=self.config.detection["face_conf_threshold"],
-            use_gpu=self.config.inference.get("use_gpu", True),
-            gpu_device_id=self.config.inference.get("gpu_device_id", 0),
-            detection_scale=self.config.detection.get("detection_scale", 1.0),
-            max_detection_size=self.config.detection.get("max_detection_size", 640)
-        )
+        # Face detector - choose based on detector_type config
+        detector_type = self.config.detection.get("detector_type", "scrfd")
+
+        if detector_type == "scrfd":
+            # SCRFD - GPU accelerated with proper landmark detection
+            self.face_detector = SCRFDDetector(
+                model_path=self.config.models.get("face_detector"),
+                conf_threshold=self.config.detection["face_conf_threshold"],
+                use_gpu=self.config.inference.get("use_gpu", True),
+                gpu_device_id=self.config.inference.get("gpu_device_id", 0),
+                max_detection_size=self.config.detection.get("max_detection_size", 640)
+            )
+        else:
+            # Fallback to YuNet (CPU-only via OpenCV)
+            self.face_detector = FaceDetector(
+                model_path=self.config.models.get("face_detector"),
+                conf_threshold=self.config.detection["face_conf_threshold"],
+                use_gpu=self.config.inference.get("use_gpu", True),
+                gpu_device_id=self.config.inference.get("gpu_device_id", 0),
+                detection_scale=self.config.detection.get("detection_scale", 1.0),
+                max_detection_size=self.config.detection.get("max_detection_size", 640)
+            )
 
         if not self.face_detector.load():
             logger.error("Failed to load face detector")
@@ -197,14 +211,17 @@ class AutoEnrollmentSession:
         face_roi = extract_roi(frame, face_bbox)
 
         # Compute quality
-        quality, _ = compute_face_quality(
+        quality, metrics = compute_face_quality(
             face_bbox,
             face_roi,
             face_conf,
-            min_bbox_size=self.config.quality["min_bbox_size"]
+            min_bbox_size=self.config.quality["min_bbox_size"],
+            blur_threshold=self.config.quality.get("blur_threshold", 50.0)
         )
 
-        logger.debug(f"Face detected: conf={face_conf:.3f}, quality={quality:.3f}, min_threshold={self.config.quality['min_face_quality']}")
+        logger.debug(f"Face detected: conf={face_conf:.3f}, quality={quality:.3f}, "
+                     f"blur={metrics.get('blur_metric', 0):.1f}, "
+                     f"min_threshold={self.config.quality['min_face_quality']}")
 
         # Require minimum quality
         if quality < self.config.quality["min_face_quality"]:
@@ -226,20 +243,14 @@ class AutoEnrollmentSession:
 
         # Build temporary index with current photos
         embeddings = []
-        for img_path, quality in [(p[2], p[1]) for p in self.photos]:
-            img = cv2.imread(img_path)
-            if img is None:
-                continue
-
-            bboxes, confs, _ = self.face_detector.detect(img)
-            if len(bboxes) == 0:
-                continue
-
-            face_roi = extract_roi(img, bboxes[0])
+        for face_roi, quality, img_path in self.photos:
+            # face_roi is already the cropped face image, extract embedding directly
             embedding = self.face_embedder.extract(face_roi)
 
             if embedding is not None:
                 embeddings.append(embedding)
+            else:
+                logger.debug(f"Failed to extract embedding from {img_path}")
 
         if len(embeddings) == 0:
             logger.warning("No embeddings extracted from captured photos!")
